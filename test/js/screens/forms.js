@@ -2,11 +2,11 @@
 import { esc, money, sheet, icon, confirmSheet, toast, signed, chip } from '../ui.js';
 import { parsePounds, penceToInput } from '../money.js';
 import { longDate, shortDate, addDays } from '../calendar.js';
-import { history, balances, displayBalance } from '../model.js';
+import { history, balances, displayBalance, makeEvent, newId } from '../model.js';
 import { addTxn, editTxn, deleteTxn, restoreTxnVersion, markPaid, setOccurrence, saveRule, changeRuleFrom, endRule, checkBalance } from '../commands.js';
 import { occurrenceByKey, describeSchedule, settledIndex, allOccurrences } from '../plan.js';
 import { ROLES, CATEGORIES, roleOf, categoryOf } from '../roles.js';
-import { saveAccount } from '../commands.js';
+import { saveAccount, validateTxn } from '../commands.js';
 
 const TYPE_ORDER = { bank: 0, pot: 1, card: 2 };
 export function accountsList(state, { types = ['bank', 'pot', 'card'], includeArchived = false } = {}) {
@@ -316,90 +316,79 @@ export function openRuleSheet(ctx, ruleId = null) {
   });
 }
 
-// ---- Check an account against the bank -------------------------------------------
-// One screen: type what the bank shows. If it differs, Payday lists what it hasn't
-// been told about yet (overdue or due items, possible duplicates) so you can fix the
-// cause. A correction is the last resort and always needs a reason.
-export function openCheckSheet(ctx, accountId, { bank = null } = {}) {
+// ---- Update an account's balance ---------------------------------------------------
+// One step: type what the bank shows and save. Anything that was due before today
+// and not yet marked is listed first (set to "Gone" by default, because a bank
+// balance already includes it), so nothing is counted twice. Whatever difference
+// is left is recorded as a dated correction you can see and undo in History.
+export function openCheckSheet(ctx, accountId) {
   const s = ctx.state, a = s.account[accountId], today = ctx.today();
   const isCard = a.type === 'card';
   const appValue = balances(s, today)[accountId];
-  const appShown = displayBalance(a, appValue);
-  if (bank === null) {
-    sheet(`Check ${a.name}`, `<form novalidate>
-      <p class="muted">What does ${isCard ? 'your card statement or app say you owe' : 'your bank app show'} for ${esc(a.name)} right now?</p>
-      ${field(isCard ? 'Amount owed (£)' : 'Balance in the bank (£)', `<input class="big" name="bank" inputmode="decimal" autocomplete="off" placeholder="0.00">`)}
-      ${errorBox()}<div class="btnrow"><button class="btn primary block" type="submit">Compare</button></div></form>`, el => {
-      const f = el.querySelector('form');
-      setTimeout(() => f.bank.focus(), 80);
-      f.onsubmit = async e => {
-        e.preventDefault();
-        const shown = parsePounds(f.bank.value);
-        if (shown === null) { showError(el, new Error('Enter the figure your bank shows, for example 310.00 or -25.00.')); return; }
-        const value = isCard ? -shown : shown;
-        if (value === appValue) {
-          const { event } = checkBalance(ctx.state, accountId, value, today);
-          await ctx.dispatch(event, { message: `${a.name} matches your bank: ${money(shown)}` });
-          return;
-        }
-        openCheckSheet(ctx, accountId, { bank: value });
-      };
-    });
-    return;
-  }
-  const diff = bank - appValue; // + means the bank has more than Payday
-  const shownDiff = isCard ? -diff : diff;
-  const occ = allOccurrences(s, s.setting.startDate?.value || today, addDays(today, 3), today)
-    .filter(o => (o.status === 'overdue' || o.status === 'planned' || o.status === 'part') && (o.from === accountId || o.to === accountId));
-  // Money the bank has already taken that Payday doesn't know about, or money that arrived.
-  const wanted = o => (diff < 0 ? o.from === accountId : o.to === accountId);
-  const cands = occ.filter(wanted).map(o => ({ ...o, amt: o.remaining || o.amount }))
-    .sort((x, y) => (x.amt === Math.abs(diff) ? -1 : 0) - (y.amt === Math.abs(diff) ? -1 : 0) || x.date.localeCompare(y.date));
-  const recent = Object.values(s.txn).filter(t => (t.from === accountId || t.to === accountId) && t.date >= addDays(today, -60));
-  const dups = recent.filter(t => recent.some(u => u.id !== t.id && u.amount === t.amount && (u.desc || '').toLowerCase() === (t.desc || '').toLowerCase() && Math.abs(Date.parse(u.date) - Date.parse(t.date)) <= 3 * 86400000 && (u.created || '') < (t.created || '')));
-  const ableDups = diff < 0 ? dups.filter(t => t.to === accountId) : dups.filter(t => t.from === accountId);
-  const body = `<div class="diffbox"><span class="muted small">Your bank shows</span><strong class="amount">${money(isCard ? -bank : bank)}</strong>
-      <span class="small">Payday shows ${money(appShown)}. The bank has <strong>${money(Math.abs(shownDiff))} ${shownDiff > 0 ? 'more' : 'less'}</strong>${isCard ? ' owing' : ''}.</span></div>
-    ${cands.length ? `<section><h2>Is it one of these?</h2><p class="muted small">${diff < 0 ? 'Payments Payday thinks haven’t gone out yet.' : 'Money Payday thinks hasn’t arrived yet.'} Mark the ones your bank shows.</p>
-      <div class="list">${cands.map(o => `<div class="row static"><div class="main"><div class="title">${esc(o.name)}</div>
-        <div class="meta">${o.amt === Math.abs(diff) ? chip('paid', 'Exact match') + ' ' : ''}${chip(o.status)} ${esc(shortDate(o.date))}</div></div>
-        <div class="amount">${money(o.amt)}</div><button class="donebtn" data-cand="${esc(o.key)}">${o.to === accountId && o.kind === 'income' ? 'Arrived' : 'Gone'}</button></div>`).join('')}</div></section>` : ''}
-    ${ableDups.length ? `<section><h2>Recorded twice?</h2><p class="muted small">Same amount and description within three days.</p><div class="list">${ableDups.map(t => `<div class="row static"><div class="main"><div class="title">${esc(t.desc)}</div>
-      <div class="meta">${esc(shortDate(t.date))}</div></div><div class="amount">${money(t.amount)}</div><button class="donebtn ghost" data-dup="${esc(t.id)}">Delete</button></div>`).join('')}</div></section>` : ''}
-    <section><h2>${cands.length || ableDups.length ? 'None of these?' : 'What was it?'}</h2>
-      <form novalidate>${field('Reason for the difference', `<input name="reason" maxlength="100" placeholder="e.g. Cash withdrawal, card refund">`)}${errorBox()}
-      <div class="btnrow"><button class="btn primary" type="submit">Record ${money(Math.abs(shownDiff))} correction</button><button class="btn" type="button" data-later>Not now</button></div></form>
-      <p class="muted small">A correction makes Payday match your bank from today. It is kept in History and can be undone.</p></section>`;
-  sheet(`Check ${a.name}`, body, el => {
-    el.querySelectorAll('[data-cand]').forEach(b => b.onclick = async () => {
-      const o = cands.find(x => x.key === b.dataset.cand);
-      try {
-        await ctx.dispatch(markPaid(ctx.state, o.key, { date: o.date <= today ? o.date : today, amount: o.amt }, today), { message: `${o.name}: marked as ${o.kind === 'income' ? 'arrived' : 'gone'}` });
-        reopen(ctx, accountId, bank);
-      } catch (err) { toast(err.message, { warn: true }); }
-    });
-    el.querySelectorAll('[data-dup]').forEach(b => b.onclick = async () => {
-      try { await ctx.dispatch(deleteTxn(ctx.state, b.dataset.dup), { message: 'Duplicate deleted' }); reopen(ctx, accountId, bank); } catch (err) { toast(err.message, { warn: true }); }
-    });
-    el.querySelector('[data-later]').onclick = async () => {
-      const { event } = checkBalance(ctx.state, accountId, bank, today);
-      await ctx.dispatch(event, { message: `Check saved; ${money(Math.abs(shownDiff))} still to explain` });
+  const due = allOccurrences(s, s.setting.startDate?.value || today, today, today)
+    .filter(o => (o.status === 'overdue' || (o.status === 'planned' && o.date <= today) || o.status === 'part') && (o.from === accountId || o.to === accountId))
+    .map(o => ({ ...o, amt: o.remaining || o.amount, gone: true }));
+  const effect = o => (o.to === accountId ? o.amt : -o.amt);
+  const body = `<form novalidate>
+    <p class="muted">Payday has <strong>${money(displayBalance(a, appValue))}</strong>${isCard ? ' owed' : ''}. What does ${isCard ? 'your card app say you owe' : 'your bank app show'} now?</p>
+    ${field(isCard ? 'Amount owed (£)' : 'Balance in the bank (£)', `<input class="big" name="bank" inputmode="decimal" autocomplete="off" placeholder="0.00">`)}
+    ${due.length ? `<h3 style="margin-top:18px">Due before today, not yet marked</h3><p class="muted small">Your bank figure already includes anything that has gone. Set each one.</p>
+      ${due.map((o, i) => `<div class="toggle"><span>${esc(o.name)}<br><small class="muted">${esc(shortDate(o.date))} · ${money(o.amt)}</small></span><button type="button" data-due="${i}" aria-pressed="true">${o.to === accountId ? 'Arrived' : 'Gone'}</button></div>`).join('')}` : ''}
+    <div class="diffbox" data-diff hidden></div>
+    ${field('Note (optional)', `<input name="reason" maxlength="100" placeholder="e.g. Cash withdrawal">`)}
+    ${errorBox()}<div class="btnrow"><button class="btn primary block" type="submit">Update balance</button></div>
+    <p class="muted small">Saved as a dated correction, so the history still adds up. You can undo it straight after, or later from History.</p></form>`;
+  sheet(`Update ${a.name}`, body, el => {
+    const f = el.querySelector('form');
+    setTimeout(() => f.bank.focus(), 80);
+    const show = () => {
+      const box = el.querySelector('[data-diff]');
+      const shown = parsePounds(f.bank.value);
+      if (shown === null) { box.hidden = true; return; }
+      const value = isCard ? -shown : shown;
+      const after = appValue + due.filter(o => o.gone).reduce((t, o) => t + effect(o), 0);
+      const diff = value - after;
+      box.hidden = false;
+      box.className = 'diffbox' + (diff === 0 ? ' ok' : '');
+      box.innerHTML = diff === 0 ? '<strong>Matches.</strong> Nothing else to correct.'
+        : `<span class="small">After the payments above, Payday would have ${money(displayBalance(a, after))}. A correction of <strong>${money(Math.abs(isCard ? -diff : diff))} ${(isCard ? -diff : diff) > 0 ? 'more' : 'less'}</strong> will be recorded.</span>`;
     };
-    el.querySelector('form').onsubmit = async e => {
+    f.bank.oninput = show;
+    el.querySelectorAll('[data-due]').forEach(b => b.onclick = () => {
+      const o = due[Number(b.dataset.due)];
+      o.gone = !o.gone;
+      b.setAttribute('aria-pressed', String(o.gone));
+      b.textContent = o.gone ? (o.to === accountId ? 'Arrived' : 'Gone') : 'Not yet';
+      show();
+    });
+    f.onsubmit = async e => {
       e.preventDefault();
-      const reason = e.target.reason.value.trim();
-      if (!reason) { showError(el, new Error('Say what the difference was, even roughly. It helps you spot patterns later.')); return; }
-      const { event } = checkBalance(ctx.state, accountId, bank, today, { correct: true, reason });
-      await ctx.dispatch(event, { message: `${a.name} now matches your bank` });
+      try {
+        const shown = parsePounds(f.bank.value);
+        if (shown === null) throw new Error('Enter the figure your bank shows, for example 310.00 or -25.00.');
+        const value = isCard ? -shown : shown;
+        const now = new Date().toISOString();
+        const changes = [];
+        let after = appValue;
+        for (const o of due.filter(x => x.gone)) {
+          const kind = o.kind === 'income' ? 'income' : o.kind === 'transfer' ? 'transfer' : 'bill';
+          const t = { id: newId('tx'), created: now, kind, amount: o.amt, date: o.date, from: o.from || null, to: o.to || null, desc: o.name, note: 'Marked when updating the balance', occ: o.key };
+          validateTxn(ctx.state, t, today);
+          changes.push({ kind: 'txn', key: t.id, value: t });
+          after += effect(o);
+        }
+        const diff = value - after;
+        const reason = f.reason.value.trim();
+        if (diff !== 0) {
+          const t = { id: newId('tx'), created: now, kind: 'adjust', amount: Math.abs(diff), date: today, from: diff < 0 ? accountId : null, to: diff > 0 ? accountId : null,
+            desc: reason ? `Bank correction: ${reason}` : `Bank correction: ${a.name}`, reason, note: `Balance updated to ${money(shown)} from the bank`, occ: null };
+          changes.push({ kind: 'txn', key: t.id, value: t });
+        }
+        changes.push({ kind: 'check', key: newId('chk'), value: { account: accountId, date: today, bank: value, app: after, at: now } });
+        await ctx.dispatch(makeEvent(ctx.state, `Updated ${a.name} to ${money(shown)}`, changes), { message: `${a.name} is now ${money(shown)}` });
+      } catch (err) { showError(el, err); }
     };
   });
-}
-async function reopen(ctx, accountId, bank) {
-  const a = ctx.state.account[accountId];
-  if (balances(ctx.state, ctx.today())[accountId] === bank) {
-    const { event } = checkBalance(ctx.state, accountId, bank, ctx.today());
-    await ctx.dispatch(event, { message: `${a.name} now matches your bank` });
-  } else openCheckSheet(ctx, accountId, { bank });
 }
 
 // ---- What an account is for -----------------------------------------------------------
