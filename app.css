@@ -245,3 +245,16 @@ details.fold[open] > summary::after { content: "Hide"; }
 .diffbox.ok { background: color-mix(in srgb, var(--in) 18%, var(--surface)); }
 .step .btnrow .btn { flex: 1 1 100%; }
 section, #verdict, .step { scroll-margin-top: calc(env(safe-area-inset-top) + 80px); }
+
+/* Today: spare breakdown and chosen accounts */
+.herolines { margin-top: 12px; border-top: 1.5px solid rgba(0,0,0,.25); padding-top: 8px; font-size: 15px; font-weight: 600; }
+.herolines div { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; }
+.hero.short { color: #000; }
+.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+.tile-acc { display: flex; flex-direction: column; gap: 2px; min-height: 104px; padding: 14px; border-radius: 18px; background: var(--surface); border: 1px solid var(--line); text-decoration: none; color: inherit; }
+.tile-acc .nm { font-size: 14px; font-weight: 650; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile-acc strong { font-size: 24px; font-weight: 780; letter-spacing: -0.02em; margin-top: 4px; }
+.tile-acc .nt { font-size: 13px; color: var(--muted); margin-top: auto; }
+.tile-acc.warn { border-color: var(--orange); }
+.tile-acc.warn .nt { color: var(--orange); font-weight: 650; }
+.tile-acc:active { transform: scale(.98); }

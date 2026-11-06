@@ -5,7 +5,6 @@ import { allOccurrences, planPeriods } from './plan.js';
 import { addDays, addMonths } from './calendar.js';
 import { project, mainAccountId, cushionOf, fundedTxn, fundKey } from './forecast.js';
 import { categoryOf, roleOf, accountsWithRole, fundsToNeed } from './roles.js';
-import { goalStatus } from './goals.js';
 import { validateTxn } from './commands.js';
 import { formatPounds } from './money.js';
 
@@ -84,8 +83,6 @@ export function payRun(state, periodKey, today) {
     return { account: a, firstShort: neg, coveredUntil, short, payments: next.length, monthlyOut: outs[0]?.amount || 0 };
   });
 
-  // Goals that need extra each payday.
-  const goals = Object.values(state.goal || {}).map(g => goalStatus(state, g.id, today)).filter(Boolean).filter(g => g.open.length);
 
   const salaryAmount = salary ? (salary.received ?? salary.expected) : 0;
   const committed = keepTotal + fundTotal + paydayTotal;
@@ -94,13 +91,12 @@ export function payRun(state, periodKey, today) {
     + payday.filter(o => o.done).reduce((t, o) => t + o.txn.amount, 0);
   const left = broughtForward + salaryAmount - doneOut - committed;
   const cushion = cushionOf(state);
-  const goalNeed = goals.reduce((t, g) => t + (g.perPayday || 0), 0);
   const spare = left - cushion;
 
   const steps = [salary && !salary.done, ...fund.map(f => !f.done && f.amount > 0), ...payday.map(o => !o.done && o.amount > 0)];
   const todo = steps.filter(Boolean).length;
   const total = (salary ? 1 : 0) + fund.filter(f => f.amount > 0 || f.done).length + payday.filter(o => o.amount > 0 || o.done).length;
-  return { period: p, next, ready, salary, broughtForward, keep, overdue, keepTotal, fund, fundTotal, groups, payday, paydayTotal, holding, goals, goalNeed,
+  return { period: p, next, ready, salary, broughtForward, keep, overdue, keepTotal, fund, fundTotal, groups, payday, paydayTotal, holding,
     left, cushion, spare, todo, total, complete: todo === 0, main };
 }
 

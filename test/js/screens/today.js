@@ -2,6 +2,10 @@
 import { esc, money, icon, sheet, relTime, signed, chip, toast } from '../ui.js';
 import { longDate, shortDate, addDays, daysBetween } from '../calendar.js';
 import { safeToSpend } from '../forecast.js';
+import { setSetting } from '../commands.js';
+import { roleOf, ROLES } from '../roles.js';
+import { accountsList } from './forms.js';
+import { displayBalance } from '../model.js';
 import { allOccurrences } from '../plan.js';
 import { canUndo, selfCheck, balances } from '../model.js';
 import { openOccurrenceSheet, field, errorBox, showError } from './forms.js';
@@ -15,13 +19,12 @@ export function renderToday(ctx) {
   const safe = safeToSpend(s, today);
   const nextPay = safe?.nextPayday;
   const days = nextPay ? daysBetween(today, nextPay) : null;
-  const cls = !safe ? 'zero' : safe.raw >= 0 ? '' : safe.lowest - safe.topupTotal < 0 ? 'short' : 'zero';
-  const heroText = !safe ? 'Outside your plan' : money(safe.safe);
-  const heroFoot = !safe ? '' : safe.raw >= 0
-    ? `Until payday, ${esc(longDate(nextPay))} · ${days} day${days === 1 ? '' : 's'}`
-    : safe.lowest - safe.topupTotal < 0
-      ? `Your current account would be ${money(-(safe.lowest - safe.topupTotal))} short before payday`
-      : `Your ${money(safe.cushion)} cushion is ${money(-safe.raw)} short before payday`;
+  const sp = safe ? spareParts(safe) : null;
+  const cls = !sp ? 'zero' : sp.spare >= 0 ? '' : 'short';
+  const heroText = !sp ? 'Outside your plan' : sp.spare >= 0 ? money(sp.spare) : `−${money(-sp.spare)}`;
+  const heroFoot = !sp ? '' : sp.spare >= 0 ? `Spare in your current account until payday, ${esc(longDate(nextPay))} (${days} day${days === 1 ? '' : 's'})`
+    : `Your current account is ${money(-sp.spare)} short of what it needs before payday, ${esc(longDate(nextPay))}`;
+  const tiles = homeTiles(ctx, safe, sp);
 
   const occ = allOccurrences(s, start, addDays(today, 7), today);
   const overdue = occ.filter(o => o.status === 'overdue');
@@ -32,7 +35,7 @@ export function renderToday(ctx) {
   if (!ctx.meta.backupCfg && !window.PAYDAY_TEST) attention.push(banner('bad', 'Automatic backup is not set up', 'If this phone’s storage is cleared, your records would be lost. Set up the backup now; it takes about five minutes.', '#/settings', 'Set up'));
   else if (['error', 'conflict', 'locked'].includes(ctx.backup.status)) attention.push(banner('bad', 'Backup needs attention', ctx.backup.message, '#/settings', 'Open'));
   if (s.setting.startCheckDone?.value === false) attention.push(banner('', 'Finish your 29 October start-up check', 'Confirm what went out between payday and 4 November.', '#/settings', 'Check'));
-  for (const t of safe?.topups || []) attention.push(banner('', `${t.name} will be ${money(t.amount)} short`, `On ${longDate(t.date)}. Move money in before then. This is already held back from your safe-to-spend figure.`, null));
+  for (const t of safe?.topups || []) attention.push(banner('', `${t.name} will be ${money(t.amount)} short`, `On ${longDate(t.date)}. Move money in before then. This is already taken off your spare figure.`, `#/account/${encodeURIComponent(t.account)}`, 'Open'));
 
   const recent = [...s.events].reverse().filter(e => !e.label.startsWith('Brought in')).slice(0, 4);
   const main = s.setting.mainAccount?.value || 'acc-current';
@@ -47,6 +50,7 @@ export function renderToday(ctx) {
 
   ctx.afterRender = el => {
     el.querySelector('[data-explain]')?.addEventListener('click', () => explain(ctx, safe, lastCheck));
+    el.querySelector('[data-choose]')?.addEventListener('click', () => chooseTiles(ctx));
     el.querySelectorAll('[data-paid]').forEach(b => b.onclick = async () => {
       const o = overdue.find(x => x.key === b.dataset.paid);
       try { await ctx.dispatch(markPaid(ctx.state, o.key, { date: o.date, amount: o.remaining || o.amount }, today), { message: `${o.name}: marked as gone` }); } catch (err) { toast(err.message, { warn: true }); }
@@ -72,11 +76,19 @@ export function renderToday(ctx) {
   <header class="topbar"><div><h1>Today</h1><div class="sub">${esc(longDate(today))}</div></div>
     <a class="iconbtn" href="#/settings" aria-label="Settings">${icon('gear')}</a></header>
   <div class="hero ${cls}">
-    <div class="label">Safe to spend</div>
+    <div class="label">${sp && sp.spare < 0 ? 'Short before payday' : 'Spare to spend'}</div>
     <div class="big amount" aria-live="polite">${heroText}</div>
     <div class="foot">${heroFoot}</div>
-    ${safe ? '<button type="button" data-explain>How this is worked out</button>' : ''}
+    ${sp ? `<div class="herolines">
+      <div><span>In ${esc(s.account[main]?.name || 'current account')} now</span><b class="amount">${money(sp.now)}</b></div>
+      <div><span>Still to go out before payday</span><b class="amount">−${money(sp.out)}</b></div>
+      ${sp.in ? `<div><span>Still to come in</span><b class="amount">+${money(sp.in)}</b></div>` : ''}
+      ${sp.topups ? `<div><span>Top-ups other accounts need</span><b class="amount">−${money(sp.topups)}</b></div>` : ''}
+      ${sp.timing ? `<div><span>Money arrives after it’s needed</span><b class="amount">−${money(sp.timing)}</b></div>` : ''}
+      <div><span>Cushion you keep</span><b class="amount">−${money(sp.cushion)}</b></div></div>
+    <button type="button" data-explain>See every payment</button>` : ''}
   </div>
+  ${tiles}
   ${payCard}
   ${backupLine(ctx)}
   ${overdue.length ? `<section><h2>Overdue ${chip('overdue', String(overdue.length))}</h2>
@@ -89,6 +101,66 @@ export function renderToday(ctx) {
     return `<div class="row" style="cursor:default"><div class="main"><div class="title">${esc(e.label)}</div><div class="meta">${esc(relTime(e.at))}</div></div>
       ${ok ? `<button class="btn small" data-undo="${esc(e.id)}" aria-label="Undo ${esc(e.label)}">Undo</button>` : ''}</div>`;
   }).join('')}</div><a href="#/history" class="linkrow">See every transaction and change ›</a>` : '<div class="card muted">Nothing changed yet.</div>'}</section>`;
+}
+
+// Spare = what is in the current account now, less everything still due before
+// payday, plus anything still to arrive, less top-ups and the cushion. Shown even
+// when negative, so every payment you record moves it.
+export function spareParts(safe) {
+  const out = safe.outgoing.reduce((t, f) => t + f.amount, 0);
+  const inc = safe.incoming.reduce((t, f) => t + f.amount, 0);
+  const close = safe.balance - out + inc;
+  const timing = Math.max(0, close - safe.lowest);
+  const spare = close - timing - safe.topupTotal - safe.cushion;
+  return { now: safe.balance, out, in: inc, topups: safe.topupTotal, timing, cushion: safe.cushion, spare };
+}
+
+function defaultTiles(s) {
+  const list = accountsList(s, { types: ['bank', 'pot'] }).filter(a => a.tracked !== false);
+  const order = ['main', 'bills', 'allowance', 'savings', 'holding', 'other'];
+  return [...list].sort((a, b) => order.indexOf(roleOf(s, a)) - order.indexOf(roleOf(s, b))).slice(0, 4).map(a => a.id);
+}
+export function tileIds(s) {
+  const chosen = (s.setting.homeAccounts?.value || []).filter(id => s.account[id] && !s.account[id].archived);
+  return chosen.length ? chosen : defaultTiles(s);
+}
+function homeTiles(ctx, safe, sp) {
+  const s = ctx.state, today = ctx.today();
+  const bal = balances(s, today);
+  const ids = tileIds(s);
+  const lows = {};
+  for (const t of safe?.topups || []) lows[t.account] = t;
+  return `<section style="margin-top:16px"><div style="display:flex;justify-content:space-between;align-items:center"><h2 style="margin:0">Accounts</h2><button class="btn small" data-choose>Choose</button></div>
+    <div class="tiles">${ids.map(id => {
+      const a = s.account[id], role = roleOf(s, a), v = a.tracked === false ? null : displayBalance(a, bal[id]);
+      const note = role === 'main' && sp ? (sp.spare >= 0 ? `${money(sp.spare)} spare` : `${money(-sp.spare)} short`)
+        : lows[id] ? `${money(lows[id].amount)} short by ${shortDate(lows[id].date)}`
+        : role === 'bills' ? 'Covers payments to payday'
+        : role === 'allowance' ? 'To spend'
+        : a.target ? `of ${money(a.target)} target` : (ROLES[role]?.label || '');
+      return `<a class="tile-acc ${lows[id] || (role === 'main' && sp && sp.spare < 0) ? 'warn' : ''}" href="#/account/${encodeURIComponent(id)}">
+        <span class="nm">${esc(a.name)}</span><strong class="amount ${v < 0 ? 'out' : ''}">${v == null ? '—' : money(v)}</strong><span class="nt">${esc(note)}</span></a>`;
+    }).join('')}</div></section>`;
+}
+function chooseTiles(ctx) {
+  const s = ctx.state;
+  const picked = new Set(tileIds(s));
+  const list = accountsList(s, { types: ['bank', 'pot', 'card'] }).filter(a => a.tracked !== false);
+  sheet('Accounts on Today', `<p class="muted small">Choose up to four. Tap one on Today to go straight to it.</p>
+    ${list.map(a => `<div class="toggle"><span>${esc(a.name)}</span><button type="button" data-pick="${esc(a.id)}" aria-pressed="${picked.has(a.id)}">${picked.has(a.id) ? 'Shown' : 'Show'}</button></div>`).join('')}
+    <div class="error" role="alert" hidden></div><div class="btnrow"><button class="btn primary block" data-save>Save</button></div>`, el => {
+    el.querySelectorAll('[data-pick]').forEach(b => b.onclick = () => {
+      const id = b.dataset.pick;
+      if (picked.has(id)) picked.delete(id);
+      else if (picked.size >= 4) { const e = el.querySelector('.error'); e.textContent = 'Four is the most. Remove one first.'; e.hidden = false; return; }
+      else picked.add(id);
+      b.setAttribute('aria-pressed', String(picked.has(id))); b.textContent = picked.has(id) ? 'Shown' : 'Show';
+    });
+    el.querySelector('[data-save]').onclick = async () => {
+      const ids = list.map(a => a.id).filter(id => picked.has(id));
+      await ctx.dispatch(setSetting(ctx.state, 'homeAccounts', ids, 'Changed accounts on Today'), { message: 'Today updated' });
+    };
+  });
 }
 
 function banner(kind, title, text, href, action) {
@@ -143,6 +215,9 @@ function backupLine(ctx) {
 }
 
 function explain(ctx, safe, lastCheck) {
+  return explainList(ctx, safe, lastCheck);
+}
+function explainList(ctx, safe, lastCheck) {
   const s = ctx.state;
   const main = s.setting.mainAccount?.value || 'acc-current';
   const name = s.account[main]?.name || 'Current account';

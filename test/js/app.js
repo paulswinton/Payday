@@ -6,7 +6,6 @@ import { upload } from './backup.js';
 import { toast, esc, closeSheet } from './ui.js';
 import { renderToday } from './screens/today.js';
 import { renderPlan, renderPeriod, renderRules } from './screens/plan.js';
-import { renderAfford, renderGoal } from './screens/afford.js';
 import { renderPayday } from './screens/payday.js';
 import { renderMoney, renderAccount, renderHistory } from './screens/money.js';
 import { renderSettings, renderWelcome } from './screens/settings.js';
@@ -104,10 +103,8 @@ const routes = [
   [/^#\/plan$/, renderPlan, 'plan'],
   [/^#\/period\/([\d-]+)$/, renderPeriod, 'plan'],
   [/^#\/rules$/, renderRules, 'plan'],
-  [/^#\/afford$/, renderAfford, 'afford'],
-  [/^#\/goal\/(.+)$/, renderGoal, 'afford'],
-  [/^#\/payday$/, renderPayday, 'today'],
-  [/^#\/payday\/([\d-]+)$/, renderPayday, 'today'],
+  [/^#\/payday$/, renderPayday, 'payday'],
+  [/^#\/payday\/([\d-]+)$/, renderPayday, 'payday'],
   [/^#\/money$/, renderMoney, 'money'],
   [/^#\/account\/(.+)$/, renderAccount, 'money'],
   [/^#\/history$/, renderHistory, 'money'],
