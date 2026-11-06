@@ -61,6 +61,7 @@ function scheduleBackup(delay = 2500) {
 ctx.backupNow = async (opts = {}) => { clearTimeout(timer); return runBackup(opts); };
 
 async function runBackup({ force = false } = {}) {
+  if (window.PAYDAY_TEST) { setBackup('off', 'Test copy: backups are switched off, so your real backup is never touched.'); return; }
   if (!ctx.meta.backupCfg || ctx.meta.role === 'viewer') return;
   if (!ctx.key) { setBackup('locked', 'Enter your backup passphrase in Settings to resume automatic backups.'); return; }
   if (running) { again = true; return; }

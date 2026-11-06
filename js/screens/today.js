@@ -29,7 +29,7 @@ export function renderToday(ctx) {
   const problems = selfCheck(s);
   const attention = [];
   if (problems.length) attention.push(banner('bad', 'Payday found a problem in its records', problems.slice(0, 3).join('. '), '#/settings', 'Details'));
-  if (!ctx.meta.backupCfg) attention.push(banner('bad', 'Automatic backup is not set up', 'If this phone’s storage is cleared, your records would be lost. Set up the backup now; it takes about five minutes.', '#/settings', 'Set up'));
+  if (!ctx.meta.backupCfg && !window.PAYDAY_TEST) attention.push(banner('bad', 'Automatic backup is not set up', 'If this phone’s storage is cleared, your records would be lost. Set up the backup now; it takes about five minutes.', '#/settings', 'Set up'));
   else if (['error', 'conflict', 'locked'].includes(ctx.backup.status)) attention.push(banner('bad', 'Backup needs attention', ctx.backup.message, '#/settings', 'Open'));
   if (s.setting.startCheckDone?.value === false) attention.push(banner('', 'Finish your 29 October start-up check', 'Confirm what went out between payday and 4 November.', '#/settings', 'Check'));
   for (const t of safe?.topups || []) attention.push(banner('', `${t.name} will be ${money(t.amount)} short`, `On ${longDate(t.date)}. Move money in before then. This is already held back from your safe-to-spend figure.`, null));

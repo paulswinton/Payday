@@ -10,7 +10,7 @@ import { checkRepo, versions, download, openBackup } from '../backup.js';
 import { validateExport, startChoices, openingBalances, buildImport, verifyImport, START_DATE } from '../importer.js';
 import { field, errorBox, showError, accountsList } from './forms.js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 
 // ---- First run ----------------------------------------------------------------
 export function renderWelcome(ctx) {
@@ -18,8 +18,20 @@ export function renderWelcome(ctx) {
     el.querySelector('[data-import]').onchange = e => readImportFile(ctx, e.target.files[0]);
     el.querySelector('[data-restore-gh]').onclick = () => backupSetupSheet(ctx, { restore: true });
     el.querySelector('[data-restore-file]').onchange = e => restoreFromFile(ctx, e.target.files[0]);
+    el.querySelector('[data-demo]')?.addEventListener('click', async () => {
+      try { const evs = await (await fetch('demo.json', { cache: 'no-store' })).json(); await ctx.replaceAll(evs); ctx.go('#/today'); }
+      catch (e) { toast('The test figures could not be loaded.', { warn: true }); }
+    });
   };
   const installed = ctx.standalone;
+  if (window.PAYDAY_TEST) return `
+  <header class="topbar"><div><h1>Payday test copy</h1><div class="sub">Separate from your real Payday</div></div></header>
+  <section class="card"><h2>Try it with a copy of your real records</h2><p class="muted">Restores your latest GitHub backup into this test copy only. Backups are switched off here, so your real backup and your real app are never changed.</p>
+    <div class="btnrow stack"><button class="btn primary" data-restore-gh>From my GitHub backup</button>
+    <label class="btn" style="display:grid;place-items:center">From a backup file<input type="file" accept=".json,application/json" data-restore-file class="sr-only"></label></div></section>
+  <section class="card"><h2>Or look around with made-up figures</h2><p class="muted">Example accounts and payments, not yours.</p>
+    <button class="btn block" data-demo>Load example figures</button></section>
+  <section class="card" hidden><input type="file" data-import></section>`;
   return `
   <header class="topbar"><div><h1>Payday</h1><div class="sub">Your money, payday to payday</div></div></header>
   ${installed ? '' : `<div class="banner"><span class="dot">!</span><div><strong>Add Payday to your Home Screen first</strong>
