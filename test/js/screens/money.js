@@ -90,19 +90,18 @@ export function renderAccount(ctx, id) {
   };
   return `<a class="back" href="#/money">${icon('back')} Money</a>
   <header class="topbar"><div><h1>${esc(a.name)}</h1><div class="sub">${esc(ROLES[roleOf(s, a)]?.label || '')}</div></div><button class="btn small" data-settings>Settings</button></header>
-  <div class="feature"><div class="feature-head"><span class="muted small">${a.type === 'card' ? 'Owed now' : 'Balance now'}</span>${a.tracked === false ? '' : confirmedBadge(s, id, today)}</div>
-    <div class="feature-big amount">${a.tracked === false ? 'Not tracked' : money(bal)}</div>
-    <div class="muted small">Recorded balance · not a forecast${nextVal != null && nextVal !== bal ? `. Expected the day before next payday: <strong>${money(nextVal)}</strong>` : ''}</div>
+  <div class="summary"><div class="feature-head"><span class="eyebrow">${a.type === 'card' ? 'Owed now' : 'In your account now'}</span>${a.tracked === false ? '' : confirmedBadge(s, id, today)}</div>
+    <div class="sum-bal amount">${a.tracked === false ? 'Not tracked' : money(bal)}</div>
+    ${nextVal != null && nextVal !== bal ? `<div class="sum-note">Expected the day before next payday: <strong>${money(nextVal)}</strong></div>` : ''}
     ${need != null ? `<p class="small" style="margin-top:8px">${need ? `<strong>${money(need)}</strong> still needed to reach ${money(a.target)}${a.deadline ? ` by ${esc(longDate(a.deadline))}` : ''}.${perPayday ? ` That is <strong>${money(perPayday)}</strong> on each of the ${paydaysLeft} payday${paydaysLeft === 1 ? '' : 's'} left.` : a.deadline && !paydaysLeft ? ' No payday left before then.' : ''}` : `Target of ${money(a.target)} reached.`}${a.priority ? ` Priority: ${PRIORITIES[a.priority]}.` : ''}</p>` : ''}
     ${a.notes ? `<p class="muted small">${esc(a.notes)}</p>` : ''}
     ${isCard && (a.apr != null || a.minimum != null || a.dueDay) ? `<p class="muted small">${[a.apr != null ? `APR ${a.apr}%` : '', a.minimum != null ? `minimum ${money(a.minimum)}` : '', a.dueDay ? `due on the ${a.dueDay}${['th', 'st', 'nd', 'rd'][(a.dueDay % 100 - 20) % 10] || ['th', 'st', 'nd', 'rd'][a.dueDay % 100] || 'th'}` : ''].filter(Boolean).join(' · ')}</p>` : ''}
     ${a.tracked === false ? (isCard ? `<p class="small">Payday doesn’t know what you owe on this card yet, so repayments can’t reduce the debt.</p><div class="btnrow"><button class="btn primary" data-track>Enter what I owe</button></div>` : '')
-      : isCard ? `<div class="btngrid"><button class="btn" data-confirm>✓ Confirm</button><button class="btn" data-check>Correct</button>
-      <button class="btn primary" data-repay>Repayment</button><button class="btn" data-add>Card spend</button></div>
-      <button class="linkrow" data-cardother style="border:0;background:none;padding:0">Interest, fee or refund ›</button>`
-      : `<div class="btngrid"><button class="btn" data-confirm>✓ Confirm</button><button class="btn" data-check>Correct</button>
-      <button class="btn" data-move>Move money</button><button class="btn" data-add>Record spend</button></div>
-      <p class="muted small" style="margin-top:8px">Confirm when the bank shows the same figure. Correct when it doesn’t.</p>`}
+      : isCard ? `<div class="acts"><button class="act" data-confirm><i>${icon('check')}</i>Matches</button><button class="act" data-check><i>${icon('adjust')}</i>Correct</button>
+      <button class="act primary" data-repay><i>${icon('transfer')}</i>Repay</button><button class="act" data-add><i>${icon('card')}</i>Spend</button></div>
+      <button class="linkbtn" data-cardother style="margin-top:8px">Interest, fee or refund</button>`
+      : `<div class="acts"><button class="act" data-confirm><i>${icon('check')}</i>Matches</button><button class="act" data-check><i>${icon('adjust')}</i>Correct</button>
+      <button class="act" data-move><i>${icon('transfer')}</i>Move</button><button class="act" data-add><i>${icon('spend')}</i>Spend</button></div>`}
   </div>
   ${reserved.length ? `<section><h2>${isCard ? 'Repayments due before payday' : 'Reserved before payday'} ${resOut ? `<span class="muted small">${money(resOut)}</span>` : ''}</h2><div class="list">${reserved.map(o => `<div class="row static"><div class="main" data-occ="${esc(o.key)}" role="button" tabindex="0" style="cursor:pointer"><div class="title">${esc(o.name)}</div>
       <div class="meta">${o.status === 'overdue' ? chip('overdue') + ' ' : ''}${esc(shortDate(o.date))}${o.variable ? ' · varies' : ''}</div></div>${isCard ? `<span class="amount">${money(o.remaining || o.amount)}</span>` : signed(o.remaining || o.amount, o.to === id ? 'in' : 'out')}
