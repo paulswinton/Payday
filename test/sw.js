@@ -4,8 +4,8 @@
 const VERSION = 'payday-test-1.1.0';
 const FILES = ['./', './index.html', './app.css', './manifest.webmanifest',
   './js/theme.js', './js/app.js', './js/ui.js', './js/model.js', './js/plan.js', './js/forecast.js', './js/commands.js',
-  './js/money.js', './js/roles.js', './js/goals.js', './js/payrun.js', './js/afford-engine.js', './js/calendar.js', './js/store.js', './js/crypto.js', './js/backup.js', './js/importer.js',
-  './js/screens/today.js', './js/screens/plan.js', './js/screens/afford.js', './js/screens/money.js', './js/screens/settings.js', './js/screens/forms.js', './js/screens/payday.js',
+  './js/money.js', './js/roles.js', './js/payrun.js', './js/calendar.js', './js/store.js', './js/crypto.js', './js/backup.js', './js/importer.js',
+  './js/screens/today.js', './js/screens/plan.js', './js/screens/money.js', './js/screens/settings.js', './js/screens/forms.js', './js/screens/payday.js',
   './icons/apple-touch-icon.png', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png'];
 
 self.addEventListener('install', e => {

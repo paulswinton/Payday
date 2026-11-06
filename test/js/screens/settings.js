@@ -154,7 +154,6 @@ export function renderSettings(ctx) {
     };
     el.querySelector('[data-everyday]')?.addEventListener('submit', e => { e.preventDefault(); sv('everydaySpend', e.target.amount, 'Changed everyday spending'); });
     el.querySelector('[data-cushion]')?.addEventListener('submit', e => { e.preventDefault(); sv('cushion', e.target.amount, 'Changed cushion'); });
-    el.querySelector('[data-comfort]')?.addEventListener('submit', e => { e.preventDefault(); sv('comfortMargin', e.target.amount, 'Changed comfortable margin'); });
     el.querySelector('[data-salary]')?.addEventListener('submit', async e => {
       e.preventDefault();
       const v = parsePounds(e.target.amount.value);
@@ -192,8 +191,6 @@ export function renderSettings(ctx) {
     <form data-everyday class="grid2" novalidate>${field('Per payday (£)', `<input name="amount" inputmode="decimal" value="${everyday != null ? esc(penceToInput(everyday)) : ''}" placeholder="Not set">`)}<button class="btn primary" type="submit" style="align-self:end">Save</button></form></section>
   <section class="card"><h2>Cushion</h2><p class="muted small">Money you never count as spendable. Safe-to-spend keeps this back.</p>
     <form data-cushion class="grid2" novalidate>${field('Keep at least (£)', `<input name="amount" inputmode="decimal" value="${esc(penceToInput(s.setting.cushion?.value || 0))}">`)}<button class="btn primary" type="submit" style="align-self:end">Save</button></form></section>
-  <section class="card"><h2>Comfortable margin</h2><p class="muted small">“Can I afford it?” says <em>fits, but tight</em> when the lowest point afterwards is less than this above your cushion.</p>
-    <form data-comfort class="grid2" novalidate>${field('Margin (£)', `<input name="amount" inputmode="decimal" value="${esc(penceToInput(s.setting.comfortMargin?.value ?? 25000))}">`)}<button class="btn primary" type="submit" style="align-self:end">Save</button></form></section>
   ${salary ? `<section class="card"><h2>Expected salary</h2><p class="muted small">Never counted as money until you confirm it has arrived. Change it for a pay rise or new job.</p>
     <form data-salary novalidate><div class="grid2">${field('Take-home (£)', `<input name="amount" inputmode="decimal" value="${esc(penceToInput(salary.amount))}">`)}${field('From payday', `<select name="from">${list.filter(p => p.end >= today).map(p => `<option value="${p.start}">${esc(periodName(p))}</option>`).join('')}</select>`)}</div>
     <button class="btn primary block" type="submit" style="margin-top:10px">Save</button></form></section>` : ''}

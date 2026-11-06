@@ -94,18 +94,14 @@ export function renderPayday(ctx, key) {
     </div><div class="sumline"><span>Left after commitments</span><span class="amount ${run.left < 0 ? 'out' : ''}">${money(run.left)}</span></div>
     <p class="small">After your ${money(run.cushion)} cushion: <strong class="amount">${money(run.spare)}</strong> you could use before ${esc(longDate(run.next?.start || run.period.end))}. Annual and irregular costs not in your plan come out of this.</p></div>`;
 
-  const goalsStep = run.goals.length ? `<div class="step"><h3><span>Goals</span></h3>${run.goals.map(g => `<a class="item" href="#/goal/${encodeURIComponent(g.goal.id)}" style="text-decoration:none;color:inherit">
-    <div class="main"><div class="title">${esc(g.goal.name)}</div><div class="meta">${g.onTrack ? `${chip('paid', 'On track')} Every payment is covered.` : g.impossible ? `${chip('overdue', 'Short')} ${money(g.impossible.short)} short on ${esc(longDate(g.impossible.date))}, with no payday left to save from.` : `${chip('overdue', 'Short')} Needs ${money(g.perPayday)} extra each payday${g.carry && !g.carry.ok ? '. Your current account can’t carry that as things stand' : ''}.`}</div></div>${icon('back').replace('<svg', '<svg style="transform:rotate(180deg);width:18px"')}</a>`).join('')}</div>` : '';
-
   const allLabel = run.complete ? 'All done' : !run.ready ? `Available on ${shortDate(run.period.start)}` : sal && !sal.done ? 'Confirm salary first' : `Record all ${run.todo} as shown`;
 
-  return `<a class="back" href="#/today">${icon('back')} Today</a>
-  <header class="topbar"><div><h1>Payday</h1><div class="sub">${esc(longDate(run.period.start))}</div></div>
+  return `<header class="topbar"><div><h1>Payday</h1><div class="sub">${esc(longDate(run.period.start))}</div></div>
     <div class="btnrow" style="margin:0;flex-wrap:nowrap">${idx > 0 ? `<a class="iconbtn" href="#/payday/${list[idx - 1].key}" aria-label="Previous payday">${icon('back')}</a>` : ''}${idx < list.length - 1 ? `<a class="iconbtn" href="#/payday/${list[idx + 1].key}" aria-label="Next payday">${icon('back').replace('<svg', '<svg style="transform:rotate(180deg)"')}</a>` : ''}</div></header>
   <div class="paycard"><div class="muted small">${run.complete ? 'Everything is done for this payday.' : `${run.total - run.todo} of ${run.total} done`}</div><div class="progress"><i style="width:${pct}%"></i></div>
     ${!run.ready ? `<p class="small">Preview. You can record things from ${esc(longDate(run.period.start))}.</p>` : ''}</div>
   <section>${salaryStep}${keepStep}${fundSteps}${groupSteps}${holdStep}</section>
-  <section>${summary}${goalsStep}</section>
+  <section>${summary}</section>
   <button class="btn primary block" data-all ${run.complete || !run.ready || (sal && !sal.done) ? 'disabled style="opacity:.5"' : ''}>${esc(allLabel)}</button>
   <p class="muted small" style="margin-top:10px">Each Done records the money as moved on payday. You can undo straight after, or change it later.</p>`;
 }
