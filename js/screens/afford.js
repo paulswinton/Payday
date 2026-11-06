@@ -179,7 +179,7 @@ export function openGoalSheet(ctx, id, preset = null) {
   const adopt = new Set();
   const pots = accountsList(s, { types: ['pot', 'bank'] }).filter(a => a.tracked !== false);
   const draw = () => `<form novalidate>
-    ${field('Goal', `<input name="name" maxlength="60" value="${esc(g?.name || preset?.name || '')}" placeholder="e.g. Lakes holiday">`)}
+    ${field('Goal', `<input name="name" maxlength="60" value="${esc(g?.name || preset?.name || '')}" placeholder="e.g. Summer holiday">`)}
     ${field('Saved in', `<select name="pot"><option value="">Choose…</option>${pots.map(a => `<option value="${esc(a.id)}" ${(g?.pot || preset?.pot) === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>`)}
     <h3 style="margin-top:18px">Payments</h3><p class="muted small">Each deposit or instalment, with the date it is due.</p>
     <div data-rows>${rows.map(r => `<div class="card" style="padding:10px 12px;margin-top:8px" data-row="${r.key}"><div class="grid2">${field('What', `<input name="label" maxlength="40" value="${esc(r.label || '')}">`)}${field('Amount (£)', `<input name="amount" inputmode="decimal" value="${r.amount ? esc(penceToInput(r.amount)) : ''}">`)}</div>
