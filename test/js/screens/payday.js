@@ -4,7 +4,10 @@ import { esc, money, icon, sheet, toast, signed, chip } from '../ui.js';
 import { longDate, shortDate, periodName } from '../calendar.js';
 import { parsePounds, penceToInput } from '../money.js';
 import { planPeriods } from '../plan.js';
-import { markPaid } from '../commands.js';
+import { markPaid, addTxn } from '../commands.js';
+import { balances } from '../model.js';
+import { roleOf } from '../roles.js';
+import { PRIORITIES } from './forms.js';
 import { payRun, recordAll, recordFund } from '../payrun.js';
 import { CATEGORIES } from '../roles.js';
 import { openOccurrenceSheet, field, errorBox, showError } from './forms.js';
@@ -30,7 +33,22 @@ export function renderPayday(ctx, key) {
   const doneBtn = (attr, label = 'Done') => `<button class="donebtn" ${attr} ${dis}>${label}</button>`;
   const doneMark = '<span class="donemark">✓ Done</span>';
 
+  // Savings goals, most important first: what each still needs. Suggestions only.
+  const bal = balances(s, today);
+  const goals = Object.values(s.account).filter(a => !a.archived && a.tracked !== false && a.target != null && ['savings', 'holding', 'allowance', 'other'].includes(roleOf(s, a)))
+    .map(a => {
+      const need = Math.max(0, a.target - (bal[a.id] ?? 0));
+      const left = a.deadline ? list.filter(p => p.start >= run.period.start && p.start <= a.deadline).length : null;
+      return { a, need, left, per: need && left ? Math.ceil(need / left) : null };
+    }).filter(g => g.need > 0)
+    .sort((x, y) => (x.a.priority || 3) - (y.a.priority || 3) || (x.a.deadline || '9999').localeCompare(y.a.deadline || '9999'));
   ctx.afterRender = el => {
+    el.querySelectorAll('[data-goal]').forEach(b => b.onclick = async () => {
+      const g = goals.find(x => x.a.id === b.dataset.goal);
+      const amount = Number(b.dataset.amount);
+      try { await ctx.dispatch(addTxn(ctx.state, { kind: 'transfer', amount, date: today, from: run.main, to: g.a.id, desc: `Extra to ${g.a.name}`, note: 'From the payday screen' }, today), { message: `${money(amount)} moved to ${g.a.name}` }); }
+      catch (err) { toast(err.message, { warn: true }); }
+    });
     el.querySelector('[data-salary-ok]')?.addEventListener('click', () => paySalary(ctx, run, run.salary.expected));
     el.querySelector('[data-salary-other]')?.addEventListener('click', () => salaryOther(ctx, run));
     el.querySelectorAll('[data-occ]').forEach(b => b.onclick = () => openOccurrenceSheet(ctx, b.dataset.occ));
@@ -101,7 +119,11 @@ export function renderPayday(ctx, key) {
   <div class="paycard"><div class="muted small">${run.complete ? 'Everything is done for this payday.' : `${run.total - run.todo} of ${run.total} done`}</div><div class="progress"><i style="width:${pct}%"></i></div>
     ${!run.ready ? `<p class="small">Preview. You can record things from ${esc(longDate(run.period.start))}.</p>` : ''}</div>
   <section>${salaryStep}${keepStep}${fundSteps}${groupSteps}${holdStep}</section>
-  <section>${summary}</section>
+  <section>${summary}
+  ${goals.length ? `<div class="step"><h3><span>Savings goals</span></h3><p>Most important first. Nothing moves unless you tap.</p>
+    ${goals.map(g => { const sugg = Math.min(g.per || g.need, Math.max(0, run.spare)); return `<div class="item"><div class="main"><a class="title" href="#/account/${encodeURIComponent(g.a.id)}" style="text-decoration:none;color:inherit">${esc(g.a.name)}</a>
+      <div class="meta">${esc(PRIORITIES[g.a.priority || 3])} · ${money(g.need)} to reach ${money(g.a.target)}${g.per ? ` · ${money(g.per)} a payday to ${esc(shortDate(g.a.deadline))}` : ''}</div></div>
+      ${run.ready && sugg > 0 ? `<button class="donebtn ghost" data-goal="${esc(g.a.id)}" data-amount="${sugg}">Move ${money(sugg)}</button>` : ''}</div>`; }).join('')}</div>` : ''}</section>
   <button class="btn primary block" data-all ${run.complete || !run.ready || (sal && !sal.done) ? 'disabled style="opacity:.5"' : ''}>${esc(allLabel)}</button>
   <p class="muted small" style="margin-top:10px">Each Done records the money as moved on payday. You can undo straight after, or change it later.</p>`;
 }

@@ -6,6 +6,9 @@ import { history, balances, displayBalance, makeEvent, newId } from '../model.js
 import { addTxn, editTxn, deleteTxn, restoreTxnVersion, markPaid, setOccurrence, saveRule, changeRuleFrom, endRule, checkBalance } from '../commands.js';
 import { occurrenceByKey, describeSchedule, settledIndex, allOccurrences } from '../plan.js';
 import { ROLES, CATEGORIES, roleOf, categoryOf } from '../roles.js';
+import { safeToSpend } from '../forecast.js';
+// Available to spend: balance less everything still due before payday, top-ups and the cushion.
+function spareOf(sf) { const out = sf.outgoing.reduce((t, f) => t + f.amount, 0), inc = sf.incoming.reduce((t, f) => t + f.amount, 0); const close = sf.balance - out + inc; return close - Math.max(0, close - sf.lowest) - sf.topupTotal - sf.cushion; }
 import { saveAccount, validateTxn } from '../commands.js';
 
 const TYPE_ORDER = { bank: 0, pot: 1, card: 2 };
@@ -28,7 +31,7 @@ export function accountOptions(state, selected, opts = {}) {
 export const accName = (state, id) => (id ? state.account[id]?.name || 'Unknown account' : '');
 
 export function txnKindIcon(t) {
-  return t.kind === 'income' ? 'income' : t.kind === 'transfer' ? 'transfer' : t.kind === 'adjust' ? 'adjust' : t.kind === 'bill' ? 'bill' : 'spend';
+  return t.kind === 'income' || t.kind === 'refund' ? 'income' : t.kind === 'transfer' ? 'transfer' : t.kind === 'adjust' ? 'adjust' : ['bill', 'interest', 'fee'].includes(t.kind) ? 'bill' : 'spend';
 }
 export function txnLine(state, t) {
   if (t.from && t.to) return `${accName(state, t.from)} → ${accName(state, t.to)}`;
@@ -46,7 +49,7 @@ export function txnAmountText(t) {
 export function txnDir(state, t, accountId = null) {
   if (accountId) return t.to === accountId ? 'in' : 'out';
   if (t.from && t.to) {
-    const own = id => state.account[id] && state.account[id].tracked !== false;
+    const own = id => state.account[id] && state.account[id].tracked !== false && state.account[id].type !== 'card';
     return own(t.from) && own(t.to) ? 'move' : 'out';
   }
   return t.to ? 'in' : 'out';
@@ -78,9 +81,11 @@ export function openAddSheet(ctx, preset = {}) {
   const body = `
     <form novalidate>
       <div class="seg" role="group" aria-label="Type">
-        <button type="button" data-kind="spend">Spend</button><button type="button" data-kind="transfer">Move money</button><button type="button" data-kind="income">Money in</button>
+        <button type="button" data-kind="spend">Spend</button><button type="button" data-kind="transfer">Move</button><button type="button" data-kind="income">Money in</button><button type="button" data-kind="plan">Plan</button>
       </div>
+      <p class="muted small" data-planhelp hidden>A payment you haven’t made yet. It is held back from your available money from now, and nothing leaves your account until you mark it paid.</p>
       ${field('Amount (£)', `<input class="big" name="amount" inputmode="decimal" autocomplete="off" placeholder="0.00" value="${esc(preset.amount ? penceToInput(preset.amount) : '')}">`)}
+      <div class="diffbox" data-hint hidden></div>
       ${field('What was it?', `<input name="desc" list="recent-desc" maxlength="120" autocomplete="off" value="${esc(preset.desc || '')}"><datalist id="recent-desc">${recent.map(d => `<option value="${esc(d)}">`).join('')}</datalist>`)}
       <div data-from>${field('From', `<select name="from">${accountOptions(s, preset.from || main)}</select>`)}</div>
       <div data-to>${field('To', `<select name="to">${accountOptions(s, preset.to || '', { none: 'Choose…' })}</select>`)}</div>
@@ -89,15 +94,33 @@ export function openAddSheet(ctx, preset = {}) {
       ${errorBox()}
       <div class="btnrow"><button class="btn primary block" type="submit">Save</button></div>
     </form>`;
+  const safe = safeToSpend(s, today);
+  const spare0 = safe ? spareOf(safe) : null;
   sheet('Record money', body, (el) => {
     const form = el.querySelector('form');
     const setKind = k => {
       kind = k;
       el.querySelectorAll('[data-kind]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.kind === k)));
       el.querySelector('[data-from]').hidden = k === 'income';
-      el.querySelector('[data-to]').hidden = k === 'spend';
+      el.querySelector('[data-to]').hidden = k === 'spend' || k === 'plan';
+      el.querySelector('[data-planhelp]').hidden = k !== 'plan';
+      el.querySelector('label.field:has([name=desc]) > span').textContent = k === 'plan' ? 'What is it?' : 'What was it?';
+      if (k === 'plan') { form.date.removeAttribute('max'); if (form.date.value <= today) form.date.value = addDays(today, 7); }
+      else { form.date.max = today; if (form.date.value > today) form.date.value = today; }
       if (k === 'income' && !form.to.value) form.to.value = main;
+      hint();
     };
+    // Show what a payment from the main account does to the money available before payday.
+    const hint = () => {
+      const box = el.querySelector('[data-hint]');
+      const amount = parsePounds(form.amount.value);
+      const fromMain = kind !== 'income' && form.from.value === main && !(kind === 'transfer' && !form.to.value);
+      if (spare0 === null || !amount || !fromMain || (kind === 'plan' && form.date.value >= safe.nextPayday)) { box.hidden = true; return; }
+      const after = spare0 - amount;
+      box.hidden = false; box.className = 'diffbox' + (after >= 0 ? ' ok' : '');
+      box.innerHTML = after >= 0 ? `Available to spend after this: <strong>${money(after)}</strong>` : `<strong>This leaves you ${money(-after)} short</strong> of what your current account needs before payday.`;
+    };
+    form.amount.addEventListener('input', hint); form.from.addEventListener('change', hint); form.date.addEventListener('change', hint);
     el.querySelectorAll('[data-kind]').forEach(b => b.onclick = () => setKind(b.dataset.kind));
     setKind(kind);
     form.onsubmit = async e => {
@@ -105,6 +128,13 @@ export function openAddSheet(ctx, preset = {}) {
       try {
         const amount = parsePounds(form.amount.value);
         if (amount === null || amount <= 0) throw new Error('Enter the amount, for example 12.50.');
+        if (kind === 'plan') {
+          const name = form.desc.value.trim();
+          if (!name) throw new Error('Say what the payment is for.');
+          if (form.date.value < today) throw new Error('A planned payment needs a date from today on. To record one already made, use Spend.');
+          await ctx.dispatch(saveRule(ctx.state, { name, kind: 'bill', amount, from: form.from.value, to: null, sched: { type: 'once', date: form.date.value }, start: form.date.value, end: null, versions: [], shift: false, note: form.note.value.trim() }), { message: `Planned: ${name} ${money(amount)} on ${shortDate(form.date.value)}` });
+          return;
+        }
         const t = { kind, amount, desc: form.desc.value, date: form.date.value, note: form.note.value.trim(),
           from: kind === 'income' ? null : form.from.value || null, to: kind === 'spend' ? null : form.to.value || null };
         if (kind === 'transfer' && !t.to) throw new Error('Choose where the money went.');
@@ -156,11 +186,13 @@ export function openTxnSheet(ctx, id, { deletedVersion = null } = {}) {
         const changes = { amount, desc: form.desc.value, date: form.date.value, note: form.note.value.trim() };
         if (form.from) changes.from = form.from.value;
         if (form.to) changes.to = form.to.value;
+        if (!(await okAfterConfirm(ctx, t, 'Change'))) return;
         await ctx.dispatch(editTxn(ctx.state, id, changes, ctx.today()), { message: 'Changes saved' });
       } catch (err) { showError(el, err); }
     };
     el.querySelector('[data-delete]')?.addEventListener('click', async () => {
-      if (!(await confirmSheet('Delete this transaction?', 'Its effect on your balances is reversed. You can undo this, or bring it back later from History.', 'Delete', true))) return;
+      if (!(await okAfterConfirm(ctx, t, 'Delete'))) return;
+      if (!(await confirmSheet('Delete this transaction?', 'Its effect on every account it touched is reversed. You can undo this, or bring it back later from History.', 'Delete', true))) return;
       try { await ctx.dispatch(deleteTxn(ctx.state, id), { message: `Deleted: ${t.desc}` }); } catch (err) { toast(err.message, { warn: true }); }
     });
     const restore = async version => {
@@ -169,6 +201,20 @@ export function openTxnSheet(ctx, id, { deletedVersion = null } = {}) {
     el.querySelector('[data-restore-last]')?.addEventListener('click', () => restore(versions.find(v => v.value)?.value || versions.find(v => v.prev)?.prev));
     el.querySelectorAll('[data-version]').forEach(b => b.onclick = () => restore(versions[Number(b.dataset.version)].value));
   });
+}
+
+// An entry dated on or before an account's last confirmed balance is already inside
+// that confirmed figure. Changing it would make the account disagree with the bank.
+async function okAfterConfirm(ctx, t, verb) {
+  for (const id of [t.from, t.to]) {
+    const a = id && ctx.state.account[id];
+    if (!a || a.tracked === false) continue;
+    const c = lastCheckOf(ctx.state, id);
+    if (c && t.date <= c.date) {
+      return confirmSheet(`${a.name} was confirmed after this`, `You confirmed ${a.name} against your bank on ${longDate(c.date)}, and this entry is already inside that figure. ${verb === 'Delete' ? 'Deleting' : 'Changing'} it will make ${a.name} disagree with your bank. If the confirmed balance was wrong, use Correct on the account instead.`, `${verb} anyway`, true);
+    }
+  }
+  return true;
 }
 
 // ---- A planned payment: mark paid, skip, change this one, or the rule ----------
@@ -259,7 +305,7 @@ export function openRuleSheet(ctx, ruleId = null) {
       <p class="muted small">For example, accommodation that stops over summer.</p></div>
     ${r ? `${field('Change applies from', `<input type="date" name="from_date" value="${esc(today)}">`)}<p class="muted small">Earlier payments keep their old details.</p>` : field('Starts', `<input type="date" name="start" value="${esc(today)}">`)}
     ${errorBox()}
-    <div class="btnrow"><button class="btn primary" type="submit">${r ? 'Save change' : 'Add regular payment'}</button>${r ? '<button class="btn danger" type="button" data-stop>Stop it</button>' : ''}</div>
+    <div class="btnrow"><button class="btn primary" type="submit">${r ? 'Save change' : 'Add regular payment'}</button>${r ? `<button class="btn" type="button" data-pause>${r.paused ? 'Resume' : 'Pause'}</button><button class="btn danger" type="button" data-stop>Stop it</button>` : ''}</div>
     ${r ? `<p class="muted small">${esc(describeSchedule(r))}${r.end ? ` · ends ${esc(longDate(r.end))}` : ''}</p>` : ''}
   </form>`;
   sheet(r ? 'Regular payment' : 'New regular payment', body, el => {
@@ -310,6 +356,9 @@ export function openRuleSheet(ctx, ruleId = null) {
         }
       } catch (err) { showError(el, err); }
     };
+    el.querySelector('[data-pause]')?.addEventListener('click', async () => {
+      try { await ctx.dispatch(saveRule(ctx.state, { ...r, paused: !r.paused }), { message: `${r.name} ${r.paused ? 'resumed' : 'paused'}` }); } catch (err) { showError(el, err); }
+    });
     el.querySelector('[data-stop]')?.addEventListener('click', () => {
       sheet(`Stop ${r.name}`, `<form novalidate>${field('Last payment on or before', `<input type="date" name="last" value="${esc(today)}">`)}${errorBox()}
         <div class="btnrow"><button class="btn danger" type="submit">Stop it</button></div></form>`, el2 => {
@@ -417,36 +466,128 @@ export function openCheckSheet(ctx, accountId) {
 }
 
 // ---- What an account is for -----------------------------------------------------------
+export const PRIORITIES = { 1: 'Essential', 2: 'High', 3: 'Medium', 4: 'Low' };
 export function openAccountSettings(ctx, accountId) {
-  const s = ctx.state, a = s.account[accountId];
+  const s = ctx.state, a = s.account[accountId], today = ctx.today();
   const role = roleOf(s, a);
-  const roles = Object.entries(ROLES).filter(([k]) => k !== 'main' || role === 'main');
+  const isCard = a.type === 'card';
+  const roles = Object.entries(ROLES).filter(([k]) => (k !== 'main' || role === 'main') && (isCard ? k === 'card' : k !== 'card'));
+  const tracked = a.tracked !== false;
   sheet(`${a.name}: settings`, `<form novalidate>
     ${field('Name', `<input name="name" maxlength="60" value="${esc(a.name)}">`)}
-    ${field('What it is for', `<select name="role">${roles.map(([k, v]) => `<option value="${k}" ${k === role ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select>`)}
+    ${isCard ? '' : field('What it is for', `<select name="role">${roles.map(([k, v]) => `<option value="${k}" ${k === role ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select>`)}
     <p class="muted small" data-help>${esc(ROLES[role]?.help || '')}</p>
+    ${isCard ? `${tracked ? '' : `<div class="toggle"><span>Track what I owe on this card<br><small class="muted">Needed to see repayments reduce the debt</small></span><button type="button" data-track aria-pressed="false">Off</button></div>
+      <div data-owed hidden>${field('Owed now, from your latest statement or card app (£)', `<input name="owed" inputmode="decimal" placeholder="0.00">`)}</div>`}
+      <div class="grid2">${field('Interest rate (APR %)', `<input name="apr" inputmode="decimal" value="${a.apr ?? ''}" placeholder="Not known">`)}${field('Minimum payment (£)', `<input name="minimum" inputmode="decimal" value="${a.minimum != null ? esc(penceToInput(a.minimum)) : ''}" placeholder="Not known">`)}</div>
+      ${field('Payment due day', `<input name="dueday" inputmode="numeric" value="${a.dueDay ?? ''}" placeholder="e.g. 7">`)}` : ''}
     <div data-bills>${field('Keep this much spare in it (£)', `<input name="buffer" inputmode="decimal" value="${esc(penceToInput(a.buffer || 0))}">`)}
-      <p class="muted small">Payday adds this on top of what the direct debits need when it works out the payday top-up. Protects you from a payment that is a little higher than expected.</p></div>
-    <div data-pot>${field('Target (£, optional)', `<input name="target" inputmode="decimal" value="${a.target != null ? esc(penceToInput(a.target)) : ''}" placeholder="None">`)}
+      <p class="muted small">Added on top of what the direct debits need when Payday works out the payday top-up.</p></div>
+    <div data-pot>${field('Goal: target (£, optional)', `<input name="target" inputmode="decimal" value="${a.target != null ? esc(penceToInput(a.target)) : ''}" placeholder="None">`)}
+      <div class="grid2">${field('Reach it by (optional)', `<input type="date" name="deadline" value="${esc(a.deadline || '')}">`)}${field('Priority', `<select name="priority">${Object.entries(PRIORITIES).map(([k, v]) => `<option value="${k}" ${String(a.priority || 3) === k ? 'selected' : ''}>${v}</option>`).join('')}</select>`)}</div>
       ${field('Never plan below (£)', `<input name="floor" inputmode="decimal" value="${esc(penceToInput(a.floor || 0))}">`)}
-      <p class="muted small">"Can I afford it?" says no to anything that would take this account below this figure, e.g. a £1,000 emergency fund.</p></div>
+      ${field('Notes', `<input name="notes" maxlength="200" value="${esc(a.notes || '')}">`)}</div>
     ${errorBox()}<div class="btnrow"><button class="btn primary block" type="submit">Save</button></div></form>`, el => {
     const f = el.querySelector('form');
+    const roleNow = () => (f.role ? f.role.value : role);
     const sync = () => {
-      el.querySelector('[data-help]').textContent = ROLES[f.role.value]?.help || '';
-      el.querySelector('[data-bills]').hidden = f.role.value !== 'bills';
-      el.querySelector('[data-pot]').hidden = !['savings', 'holding', 'allowance', 'other'].includes(f.role.value);
+      el.querySelector('[data-help]').textContent = ROLES[roleNow()]?.help || '';
+      el.querySelector('[data-bills]').hidden = roleNow() !== 'bills';
+      el.querySelector('[data-pot]').hidden = !['savings', 'holding', 'allowance', 'other'].includes(roleNow());
     };
-    f.role.onchange = sync; sync();
+    if (f.role) f.role.onchange = sync;
+    sync();
+    const tb = el.querySelector('[data-track]');
+    if (tb) tb.onclick = () => { const on = tb.getAttribute('aria-pressed') !== 'true'; tb.setAttribute('aria-pressed', String(on)); tb.textContent = on ? 'On' : 'Off'; el.querySelector('[data-owed]').hidden = !on; };
     f.onsubmit = async e => {
       e.preventDefault();
       try {
-        const num = (v, allowEmpty) => { if (allowEmpty && !v.trim()) return null; const x = parsePounds(v || '0'); if (x === null || x < 0) throw new Error('Enter amounts like 1000.00'); return x; };
-        const next = { ...a, name: f.name.value.trim(), buffer: num(f.buffer.value), target: num(f.target.value, true), floor: num(f.floor.value) };
-        if (f.role.value !== role || a.role) next.role = f.role.value;
+        const num = (v, allowEmpty) => { if (allowEmpty && !String(v || '').trim()) return null; const x = parsePounds(v || '0'); if (x === null || x < 0) throw new Error('Enter amounts like 1000.00'); return x; };
+        const next = { ...a, name: f.name.value.trim() };
+        if (!next.name) throw new Error('Give it a name.');
+        if (isCard) {
+          const apr = String(f.apr.value || '').trim();
+          if (apr && !(Number(apr) >= 0 && Number(apr) < 100)) throw new Error('Enter the APR as a number, e.g. 24.9');
+          next.apr = apr ? Number(apr) : null;
+          next.minimum = num(f.minimum.value, true);
+          const d = String(f.dueday.value || '').trim();
+          if (d && !(Number(d) >= 1 && Number(d) <= 31)) throw new Error('Enter a due day between 1 and 31.');
+          next.dueDay = d ? Number(d) : null;
+          if (tb && tb.getAttribute('aria-pressed') === 'true') {
+            const owed = num(f.owed.value);
+            // Start tracking from today: earlier repayments are already in the statement figure.
+            Object.assign(next, { tracked: true, opening: -owed, openingDate: today });
+            const changes = [{ kind: 'account', key: a.id, value: next }, { kind: 'check', key: newId('chk'), value: { account: a.id, date: today, bank: -owed, app: -owed, at: new Date().toISOString() } }];
+            await ctx.dispatch(makeEvent(ctx.state, `Tracking ${next.name}: ${money(owed)} owed`, changes), { message: `${next.name}: tracking ${money(owed)} owed` });
+            return;
+          }
+        } else {
+          Object.assign(next, { buffer: num(f.buffer.value), target: num(f.target.value, true), floor: num(f.floor.value),
+            deadline: f.deadline.value || null, priority: Number(f.priority.value), notes: f.notes.value.trim() });
+          if (roleNow() !== role || a.role) next.role = roleNow();
+        }
         await ctx.dispatch(saveAccount(ctx.state, next), { message: `${next.name} saved` });
       } catch (err) { showError(el, err); }
     };
   });
 }
+
+// ---- Credit-card activity ----------------------------------------------------------
+// A purchase, interest or a fee adds to what you owe; a refund or a repayment
+// reduces it. A repayment also leaves the account it is paid from, and if a
+// scheduled repayment is due it is recorded against that, so it is never doubled.
+const CARD_KINDS = [['repayment', 'Repayment'], ['spend', 'Spend'], ['interest', 'Interest'], ['fee', 'Fee'], ['refund', 'Refund']];
+export function openCardSheet(ctx, cardId, kind = 'repayment') {
+  const s = ctx.state, card = s.account[cardId], today = ctx.today();
+  const main = s.setting.mainAccount?.value || 'acc-current';
+  if (card.tracked === false) { toast('First enter what you owe on this card, in its Settings.', { warn: true }); openAccountSettings(ctx, cardId); return; }
+  const owed = -(balances(s, today)[cardId] ?? 0);
+  const sched = allOccurrences(s, addDays(today, -40), addDays(today, 45), today)
+    .filter(o => o.to === cardId && ['overdue', 'planned', 'part'].includes(o.status)).sort((x, y) => x.date.localeCompare(y.date));
+  const body = `<form novalidate>
+    <div class="seg" role="group" aria-label="Type">${CARD_KINDS.map(([k, l]) => `<button type="button" data-ck="${k}">${l}</button>`).join('')}</div>
+    <p class="muted small" data-help></p>
+    ${field('Amount (£)', `<input class="big" name="amount" inputmode="decimal" autocomplete="off" placeholder="0.00">`)}
+    <div data-src>${field('Paid from', `<select name="from">${accountOptions(s, main, { types: ['bank', 'pot'] })}</select>`)}
+      ${sched.length ? `<div class="toggle"><span>This is the scheduled ${esc(sched[0].name)}<br><small class="muted">${esc(shortDate(sched[0].date))} · ${money(sched[0].remaining || sched[0].amount)} planned</small></span><button type="button" data-link aria-pressed="true">Yes</button></div>` : ''}</div>
+    <div data-what>${field('What was it?', `<input name="desc" maxlength="120" autocomplete="off">`)}</div>
+    ${field('Date', `<input type="date" name="date" value="${today}" max="${today}">`)}
+    ${errorBox()}<div class="btnrow"><button class="btn primary block" type="submit">Save</button></div>
+    <p class="muted small">Owed now: ${money(owed)}.</p></form>`;
+  sheet(card.name, body, el => {
+    const f = el.querySelector('form');
+    const link = el.querySelector('[data-link]');
+    if (link) {
+      link.onclick = () => { const on = link.getAttribute('aria-pressed') !== 'true'; link.setAttribute('aria-pressed', String(on)); link.textContent = on ? 'Yes' : 'No'; };
+      f.amount.value = penceToInput(sched[0].remaining || sched[0].amount);
+      if (sched[0].from) f.from.value = sched[0].from;
+    }
+    const HELP = { repayment: 'Money leaves your account and the card debt goes down by the same amount. Not spending: it settles spending already made.', spend: 'Something bought on the card. The debt goes up; your bank account doesn’t change.',
+      interest: 'Interest charged by the card. The debt goes up.', fee: 'A fee charged by the card. The debt goes up.', refund: 'Money refunded to the card. The debt goes down.' };
+    const setKind = k => {
+      kind = k;
+      el.querySelectorAll('[data-ck]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.ck === k)));
+      el.querySelector('[data-src]').hidden = k !== 'repayment';
+      el.querySelector('[data-what]').hidden = k === 'repayment' || k === 'interest';
+      el.querySelector('[data-help]').textContent = HELP[k];
+    };
+    el.querySelectorAll('[data-ck]').forEach(b => b.onclick = () => setKind(b.dataset.ck));
+    setKind(kind);
+    f.onsubmit = async e => {
+      e.preventDefault();
+      try {
+        const amount = parsePounds(f.amount.value);
+        if (amount === null || amount <= 0) throw new Error('Enter the amount, for example 268.91.');
+        if ((kind === 'repayment' || kind === 'refund') && amount > owed) throw new Error(`That is more than the ${money(owed)} Payday has as owed. Correct the card balance first if it is wrong.`);
+        const date = f.date.value;
+        const desc = kind === 'repayment' ? `${card.name} repayment` : kind === 'interest' ? `${card.name} interest` : (f.desc.value.trim() || (kind === 'fee' ? `${card.name} fee` : kind === 'refund' ? `${card.name} refund` : ''));
+        if (!desc) throw new Error('Say what it was.');
+        const t = kind === 'repayment' ? { kind: 'transfer', from: f.from.value, to: cardId, occ: link && link.getAttribute('aria-pressed') === 'true' ? sched[0].key : null }
+          : kind === 'refund' ? { kind: 'refund', from: null, to: cardId } : { kind, from: cardId, to: null };
+        await ctx.dispatch(addTxn(ctx.state, { ...t, amount, date, desc, note: '' }, today), { message: `${desc}: ${money(amount)}` });
+      } catch (err) { showError(el, err); }
+    };
+  });
+}
+
 export { field, errorBox, showError, addDays };

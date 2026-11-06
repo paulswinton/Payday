@@ -128,7 +128,7 @@ export function signed(pence, dir) {
   if (dir === 'out') return `<span class="amount out">−${formatPounds(Math.abs(pence))}</span>`;
   return `<span class="amount move">${formatPounds(pence)}</span>`;
 }
-const CHIP = { planned: ['due', 'Due'], due: ['due', 'Due'], paid: ['paid', 'Paid'], overdue: ['overdue', 'Overdue'], part: ['part', 'Part paid'], skipped: ['skipped', 'Skipped'], est: ['est', 'Estimate'], now: ['now', 'Now'] };
+const CHIP = { scheduled: ['scheduled', 'Scheduled'], stopped: ['stopped', 'Stopped'], paused: ['skipped', 'Paused'], soon: ['soon', 'Due soon'], planned: ['due', 'Due'], due: ['due', 'Due'], paid: ['paid', 'Paid'], overdue: ['overdue', 'Overdue'], part: ['part', 'Part paid'], skipped: ['skipped', 'Skipped'], est: ['est', 'Estimate'], now: ['now', 'Now'] };
 export function chip(status, text) {
   const [cls, label] = CHIP[status] || ['', status];
   return `<span class="chip ${cls}">${esc(text || label)}</span>`;
