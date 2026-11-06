@@ -1,4 +1,4 @@
-// Today: what is safe to spend until payday, what needs doing, what just changed.
+// Today: what is in the current account, what is due this week, what is free to spend, and what needs you.
 import { esc, money, icon, sheet, relTime, signed, chip, toast } from '../ui.js';
 import { longDate, shortDate, addDays, daysBetween } from '../calendar.js';
 import { safeToSpend } from '../forecast.js';
@@ -17,87 +17,100 @@ import { currentRunKey } from './payday.js';
 export function renderToday(ctx) {
   const s = ctx.state, today = ctx.today();
   const start = s.setting.startDate?.value || today;
+  const main = s.setting.mainAccount?.value || 'acc-current';
+  const acc = s.account[main];
   const safe = safeToSpend(s, today);
-  const nextPay = safe?.nextPayday;
-  const days = nextPay ? daysBetween(today, nextPay) : null;
-  const sp = safe ? spareParts(safe) : null;
-  const cls = !sp ? 'zero' : sp.spare >= 0 ? '' : 'short';
-  const heroText = !sp ? 'Outside your plan' : sp.spare >= 0 ? money(sp.spare) : `−${money(-sp.spare)}`;
-  const heroFoot = !sp ? '' : sp.spare >= 0 ? `Spare in your current account until payday, ${esc(longDate(nextPay))} (${days} day${days === 1 ? '' : 's'})`
-    : `Your current account is ${money(-sp.spare)} short of what it needs before payday, ${esc(longDate(nextPay))}`;
-  const tiles = homeTiles(ctx, safe, sp);
-  const featured = featuredCards(ctx, safe, sp);
+  const week = weekAhead(ctx);
+  const tiles = homeTiles(ctx, safe);
 
   const occ = allOccurrences(s, start, addDays(today, 7), today);
   const overdue = occ.filter(o => o.status === 'overdue');
-  const soon = occ.filter(o => o.status === 'planned' && o.date <= addDays(today, 7));
   const problems = selfCheck(s);
-  const attention = [];
-  if (problems.length) attention.push(banner('bad', 'Payday found a problem in its records', problems.slice(0, 3).join('. '), '#/settings', 'Details'));
-  if (!ctx.meta.backupCfg && !window.PAYDAY_TEST) attention.push(banner('bad', 'Automatic backup is not set up', 'If this phone’s storage is cleared, your records would be lost. Set up the backup now; it takes about five minutes.', '#/settings', 'Set up'));
-  else if (['error', 'conflict', 'locked'].includes(ctx.backup.status)) attention.push(banner('bad', 'Backup needs attention', ctx.backup.message, '#/settings', 'Open'));
-  if (s.setting.startCheckDone?.value === false) attention.push(banner('', 'Finish your 29 October start-up check', 'Confirm what went out between payday and 4 November.', '#/settings', 'Check'));
-  for (const t of safe?.topups || []) attention.push(banner('', `${t.name} will be ${money(t.amount)} short`, `On ${longDate(t.date)}. Move money in before then. This is already taken off your spare figure.`, `#/account/${encodeURIComponent(t.account)}`, 'Open'));
-
-  const checks = toCheck(ctx, today);
-  const recent = [...s.events].reverse().filter(e => !e.label.startsWith('Brought in')).slice(0, 4);
-  const main = s.setting.mainAccount?.value || 'acc-current';
-  const lastCheck = Object.values(s.check).filter(c => c.account === main).sort((a, b) => (b.at || b.date).localeCompare(a.at || a.date))[0];
+  // Everything that needs you, in one list: overdue payments, then warnings, then things to check.
+  const needs = [];
+  // Overdue current-account payments already show in the summary above.
+  for (const o of overdue.filter(x => x.from !== main)) needs.push({ html: `<div class="nrow"><div class="main" data-occ="${esc(o.key)}" role="button" tabindex="0"><div class="title">${esc(o.name)}</div><div class="meta">${chip('overdue')} was due ${esc(shortDate(o.date))} · ${esc(s.account[o.from]?.name || s.account[o.to]?.name || '')}</div></div>${signed(o.remaining || o.amount, occDir(s, o))}<button class="donebtn" data-paid="${esc(o.key)}">${o.kind === 'income' ? 'Arrived' : 'Gone'}</button></div>` });
+  if (problems.length) needs.push(linkRow('Payday found a problem in its records', problems[0], '#/settings', true));
+  if (!ctx.meta.backupCfg && !window.PAYDAY_TEST) needs.push(linkRow('Set up automatic backup', 'Your records are only on this phone.', '#/settings', true));
+  else if (['error', 'conflict', 'locked'].includes(ctx.backup.status)) needs.push(linkRow('Backup needs attention', ctx.backup.message, '#/settings', true));
+  for (const t of safe?.topups || []) needs.push(linkRow(`${t.name} will be ${money(t.amount)} short`, `On ${shortDate(t.date)}. Move money in before then.`, `#/account/${encodeURIComponent(t.account)}`, true));
+  for (const c of toCheck(ctx, today)) needs.push(c.href ? linkRow(c.title, c.text, c.href) : { html: `<button class="nrow" data-occ="${esc(c.occ)}"><div class="main"><div class="title">${esc(c.title)}</div><div class="meta">${esc(c.text)}</div></div><span class="chev">›</span></button>` });
 
   const runKey = currentRunKey(s, today);
   const run = runKey ? payRun(s, runKey, today) : null;
-  const payCard = run && (!run.complete || run.period.start === today) ? `<a class="paycard" href="#/payday/${run.period.key}" style="display:block;text-decoration:none;color:inherit;margin-top:12px">
-    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px"><h2>${run.ready ? 'Payday' : `Payday ${daysBetween(today, run.period.start) === 1 ? 'tomorrow' : `in ${daysBetween(today, run.period.start)} days`}`}</h2><span class="muted small">${esc(longDate(run.period.start))}</span></div>
-    <div class="muted small">${run.complete ? 'Everything is done.' : run.ready ? `${run.total - run.todo} of ${run.total} done. Tap to see what to move where.` : `See what will need moving where, and what will be left.`}</div>
-    <div class="progress"><i style="width:${run.total ? Math.round(((run.total - run.todo) / run.total) * 100) : 100}%"></i></div></a>` : '';
+  const payCard = run && (!run.complete || run.period.start === today) ? `<a class="paystrip" href="#/payday/${run.period.key}">
+    <div><div class="eyebrow">${run.ready ? 'Payday today' : `Payday ${daysBetween(today, run.period.start) === 1 ? 'tomorrow' : `in ${daysBetween(today, run.period.start)} days`}`}</div>
+    <div class="title">${run.complete ? 'Everything is done' : run.ready ? `${run.total - run.todo} of ${run.total} done` : 'See what to move where'}</div></div>
+    <div class="ring" style="--p:${run.total ? Math.round(((run.total - run.todo) / run.total) * 100) : 100}"></div></a>` : '';
 
   ctx.afterRender = el => {
-    el.querySelector('[data-explain]')?.addEventListener('click', () => explain(ctx, safe, lastCheck));
     el.querySelector('[data-choose]')?.addEventListener('click', () => chooseTiles(ctx));
     el.querySelector('[data-confirm-main]')?.addEventListener('click', () => confirmBalance(ctx, main));
     el.querySelector('[data-correct-main]')?.addEventListener('click', () => openCheckSheet(ctx, main));
     el.querySelector('[data-cushion]')?.addEventListener('click', () => cushionSheet(ctx));
-    el.querySelectorAll('[data-paid]').forEach(b => b.onclick = async () => {
-      const o = overdue.find(x => x.key === b.dataset.paid);
-      try { await ctx.dispatch(markPaid(ctx.state, o.key, { date: o.date, amount: o.remaining || o.amount }, today), { message: `${o.name}: marked as gone` }); } catch (err) { toast(err.message, { warn: true }); }
-    });
-    el.querySelectorAll('[data-nope]').forEach(b => b.onclick = async () => {
-      const o = overdue.find(x => x.key === b.dataset.nope);
-      try { await ctx.dispatch(setOccurrence(ctx.state, o.key, { skip: true }, `${o.name} on ${o.date} didn't happen`), { message: `${o.name}: marked as didn't happen` }); } catch (err) { toast(err.message, { warn: true }); }
-    });
-    el.querySelectorAll('[data-moved]').forEach(b => b.onclick = () => movedSheet(ctx, overdue.find(x => x.key === b.dataset.moved)));
-    el.querySelectorAll('[data-allgone]').forEach(b => b.onclick = async () => {
-      const list = overdue.filter(o => (o.from || o.to) === b.dataset.allgone);
-      try {
-        const evs = list.map(o => markPaid(ctx.state, o.key, { date: o.date, amount: o.remaining || o.amount }, today));
-        const ev = { ...evs[0], label: `${list.length} payments from ${s.account[b.dataset.allgone]?.name} marked as gone`, ops: evs.flatMap(e => e.ops) };
-        await ctx.dispatch(ev, { message: ev.label });
-      } catch (err) { toast(err.message, { warn: true }); }
+    el.querySelectorAll('[data-paid]').forEach(b => b.onclick = async e => {
+      e.stopPropagation();
+      const o = [...overdue, ...week.items].find(x => x.key === b.dataset.paid);
+      try { await ctx.dispatch(markPaid(ctx.state, o.key, { date: o.date <= today ? o.date : today, amount: o.remaining || o.amount }, today), { message: `${o.name}: ${money(o.remaining || o.amount)} recorded` }); } catch (err) { toast(err.message, { warn: true }); }
     });
     el.querySelectorAll('[data-occ]').forEach(b => b.onclick = () => openOccurrenceSheet(ctx, b.dataset.occ));
-    el.querySelectorAll('[data-undo]').forEach(b => b.onclick = () => ctx.undo(s.events.find(e => e.id === b.dataset.undo)));
   };
 
+  if (!acc) return '<div class="empty">No main account set.</div>';
+  const bal = balances(s, today)[main];
+  const avail = bal - week.total - (s.setting.cushion?.value || 0);
+  const next = week.items[0];
+  const firstGap = (() => { let left = bal; for (const o of week.items) { left -= (o.remaining || o.amount); if (left < 0) return o; } return null; })();
+  const shown = needs.slice(0, 4), more = needs.slice(4);
+
   return `
-  <header class="topbar"><div><h1>Today</h1><div class="sub">${esc(longDate(today))}</div></div>
+  <header class="topbar"><div><div class="eyebrow">Today</div><h1>${esc(dayTitle(today))}</h1></div>
     <a class="iconbtn" href="#/settings" aria-label="Settings">${icon('gear')}</a></header>
-  ${featured}
-  ${tiles}
+
+  <section class="summary">
+    <div class="sum-top"><a class="sum-acc" href="#/account/${encodeURIComponent(main)}">${esc(acc.name)} <span class="chev">›</span></a>${confirmedBadge(s, main, today)}</div>
+    <div class="sum-bal amount">${money(bal)}</div>
+    <div class="sum-note">In your account now</div>
+    ${next ? `<button class="sum-next" data-occ="${esc(next.key)}"><span><span class="eyebrow">Next payment</span><span class="nm">${esc(next.name)} · ${esc(shortDate(next.date))}${next.status === 'overdue' ? ' ' + chip('overdue') : ''}</span></span>${signed(next.remaining || next.amount, 'out')}</button>` : ''}
+    <div class="sum-actions"><button class="pill" data-confirm-main>${icon('check')} Matches bank</button><button class="pill" data-correct-main>${icon('adjust')} Correct</button></div>
+
+    <div class="sum-split"></div>
+    <div class="eyebrow">Available to spend</div>
+    <div class="sum-avail amount ${avail < 0 ? 'neg' : ''}">${avail < 0 ? '−' : ''}${money(Math.abs(avail))}</div>
+    <div class="sum-note">Balance less ${week.items.length ? `${money(week.total)} due in the next 7 days` : 'nothing due in the next 7 days'} and your ${money(s.setting.cushion?.value || 0)} cushion <button class="chipbtn" data-cushion>Edit</button></div>
+    ${firstGap ? `<div class="sum-warn">${icon('bank')}<span>Not enough for <strong>${esc(firstGap.name)}</strong> on ${esc(shortDate(firstGap.date))}. Move at least ${money(-(bal - week.items.slice(0, week.items.indexOf(firstGap) + 1).reduce((t, o) => t + (o.remaining || o.amount), 0)))} into ${esc(acc.name)}.</span></div>` : ''}
+    ${week.items.length ? `<details class="sum-list" ${week.items.some(o => o.status === 'overdue') ? 'open' : ''}><summary><span>Due in the next 7 days (${week.items.length})</span>${signed(week.total, 'out')}</summary>${week.items.map(o => `<div class="srow"><button class="main" data-occ="${esc(o.key)}"><span class="nm">${esc(o.name)}</span><span class="dt">${o.status === 'overdue' ? 'Overdue' : esc(shortDate(o.date))}${o.variable ? ' · varies' : ''}</span></button>${signed(o.remaining || o.amount, 'out')}<button class="donebtn sm" data-paid="${esc(o.key)}">Paid</button></div>`).join('')}</details>` : ''}
+    ${week.later ? `<div class="sum-note" style="margin-top:10px">A further ${money(week.later)} is due from ${esc(acc.name)} before payday on ${esc(shortDate(safe.nextPayday))}.</div>` : ''}
+  </section>
+
   ${payCard}
-  ${backupLine(ctx)}
-  ${overdue.length ? `<section><h2>Overdue ${chip('overdue', String(overdue.length))}</h2>
-    <p class="muted small">Past their date and not marked. Tap Gone if your bank shows it, or tap the payment to skip it or change its date.</p>
-    ${overdueGroups(ctx, overdue)}</section>` : ''}
-  ${attention.length ? `<section><h2>Needs attention</h2>${attention.join('')}</section>` : ''}
-  ${checks.length ? `<section><details class="fold card"><summary>To check (${checks.length})</summary>
-    <p class="muted small">Figures Payday can’t be sure of until you check them against your bank, statements or letters.</p>
-    <div class="list">${checks.map(c => `<${c.href ? `a href="${c.href}"` : `button data-occ="${esc(c.occ)}"`} class="row"><div class="main"><div class="title">${esc(c.title)}</div><div class="meta">${esc(c.text)}</div></div>›</${c.href ? 'a' : 'button'}>`).join('')}</div></details></section>` : ''}
-  <section><h2>Next 7 days</h2>${soon.length ? `<div class="list">${soon.map(o => occRow(ctx, o)).join('')}</div>` : '<div class="card muted">Nothing planned in the next 7 days.</div>'}</section>
-  <section><h2>Recent changes</h2>${recent.length ? `<div class="list">${recent.map(e => {
-    const ok = canUndo(s, e).ok && !e.undoes;
-    return `<div class="row" style="cursor:default"><div class="main"><div class="title">${esc(e.label)}</div><div class="meta">${esc(relTime(e.at))}</div></div>
-      ${ok ? `<button class="btn small" data-undo="${esc(e.id)}" aria-label="Undo ${esc(e.label)}">Undo</button>` : ''}</div>`;
-  }).join('')}</div><a href="#/history" class="linkrow">See every transaction and change ›</a>` : '<div class="card muted">Nothing changed yet.</div>'}</section>`;
+
+  <section><div class="sec-head"><span class="eyebrow">Your accounts</span><button class="linkbtn" data-choose>Customise</button></div>${tiles}</section>
+
+  ${needs.length ? `<section><div class="sec-head"><span class="eyebrow">Needs you · ${needs.length}</span></div>
+    <div class="list">${shown.map(n => n.html).join('')}</div>
+    ${more.length ? `<details class="fold"><summary style="font-size:15px">${more.length} more</summary><div class="list">${more.map(n => n.html).join('')}</div></details>` : ''}</section>` : ''}
+
+  <a href="#/history" class="linkrow">All transactions and changes ›</a>`;
+}
+
+// Payments still to leave the main account in the next 7 days (overdue ones included).
+function weekAhead(ctx) {
+  const s = ctx.state, today = ctx.today();
+  const main = s.setting.mainAccount?.value || 'acc-current';
+  const start = s.setting.startDate?.value || today;
+  const live = o => o.from === main && o.kind !== 'income' && ['overdue', 'planned', 'part'].includes(o.status);
+  const items = allOccurrences(s, start, addDays(today, 7), today).filter(o => live(o) && !o.undated).sort((a, b) => a.date.localeCompare(b.date));
+  const total = items.reduce((t, o) => t + (o.remaining || o.amount), 0);
+  const safe = safeToSpend(s, today);
+  const later = safe ? allOccurrences(s, addDays(today, 8), addDays(safe.nextPayday, -1), today).filter(live).reduce((t, o) => t + (o.remaining || o.amount), 0) : 0;
+  return { items, total, later };
+}
+function dayTitle(d) {
+  return new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
+}
+function linkRow(title, text, href, warn = false) {
+  return { html: `<a class="nrow" href="${href}"><div class="main"><div class="title">${warn ? '<span class="dotw"></span>' : ''}${esc(title)}</div><div class="meta">${esc(text)}</div></div><span class="chev">›</span></a>` };
 }
 
 // Spare = what is in the current account now, less everything still due before
@@ -204,20 +217,18 @@ export function tileIds(s) {
 function homeTiles(ctx, safe) {
   const s = ctx.state, today = ctx.today();
   const bal = balances(s, today);
-  const ids = tileIds(s);
   const lows = {};
   for (const t of safe?.topups || []) lows[t.account] = t;
-  return `<section style="margin-top:18px"><div style="display:flex;justify-content:space-between;align-items:center"><h2 style="margin:0">Your other accounts</h2><button class="btn small" data-choose>Customise</button></div>
-    <div class="tiles">${ids.map(id => {
-      const a = s.account[id], role = roleOf(s, a), v = a.tracked === false ? null : displayBalance(a, bal[id]);
-      const need = a.target != null && v != null ? Math.max(0, a.target - v) : null;
-      const note = lows[id] ? `${money(lows[id].amount)} short by ${shortDate(lows[id].date)}`
-        : a.type === 'card' ? 'owed'
-        : need ? `${money(need)} to reach ${money(a.target)}` : need === 0 ? `Target ${money(a.target)} reached` : '';
-      return `<a class="tile-acc ${lows[id] ? 'warn' : ''}" href="#/account/${encodeURIComponent(id)}">
-        <span class="nm">${esc(a.name)}</span><strong class="amount ${v < 0 && a.type !== 'card' ? 'out' : ''}">${v == null ? '—' : money(v)}</strong>
-        ${note ? `<span class="nt">${esc(note)}</span>` : ''}<span class="nt">${confirmedBadge(s, id, today)}</span></a>`;
-    }).join('')}</div></section>`;
+  return `<div class="tiles">${tileIds(s).map(id => {
+    const a = s.account[id], v = a.tracked === false ? null : displayBalance(a, bal[id]);
+    const c = lastCheckOf(s, id);
+    const need = a.target != null && v != null ? Math.max(0, a.target - v) : null;
+    const note = lows[id] ? `${money(lows[id].amount)} short ${shortDate(lows[id].date)}` : a.type === 'card' ? 'owed' : need ? `${money(need)} to target` : '';
+    const fresh = c && Math.round((Date.parse(today) - Date.parse(c.date)) / 86400000) <= 14;
+    return `<a class="tile-acc ${lows[id] ? 'warn' : ''}" href="#/account/${encodeURIComponent(id)}">
+      <span class="nm">${esc(a.name)}</span><strong class="amount">${v == null ? '—' : money(v)}</strong>
+      <span class="nt">${note ? esc(note) + ' · ' : ''}<span class="${fresh ? 'okc' : 'oldc'}">${c ? `${fresh ? '✓ ' : ''}${esc(shortDate(c.date))}` : 'not confirmed'}</span></span></a>`;
+  }).join('')}</div>`;
 }
 function chooseTiles(ctx) {
   const s = ctx.state;

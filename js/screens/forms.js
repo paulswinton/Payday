@@ -377,11 +377,11 @@ export function lastCheckOf(state, id) {
 }
 export function confirmedBadge(state, id, today) {
   const c = lastCheckOf(state, id);
-  if (!c) return '<span class="badge warn">Not confirmed yet</span>';
+  if (!c) return '<span class="badge warn">Not confirmed</span>';
   const when = c.at ? new Date(c.at) : null;
   const time = when && !c.imported ? ` · ${when.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}` : '';
   const days = Math.round((Date.parse(today) - Date.parse(c.date)) / 86400000);
-  return `<span class="badge ${days > 14 ? 'warn' : 'ok'}">${days > 14 ? '' : '✓ '}Confirmed ${esc(shortDate(c.date))}${time}</span>`;
+  return `<span class="badge ${days > 14 ? 'warn' : 'ok'}">${days > 14 ? 'Checked' : '✓'} ${esc(shortDate(c.date))}${time}</span>`;
 }
 export async function confirmBalance(ctx, accountId) {
   const s = ctx.state, a = s.account[accountId], today = ctx.today();

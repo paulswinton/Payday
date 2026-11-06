@@ -12,7 +12,7 @@ import { renderSettings, renderWelcome } from './screens/settings.js';
 import { openAddSheet } from './screens/forms.js';
 import { applyTheme } from './screens/settings.js';
 
-export const VERSION = '1.2.0';
+export const VERSION = '1.3.0';
 
 const ctx = {
   state: emptyState(), store: null, meta: {}, key: null,
