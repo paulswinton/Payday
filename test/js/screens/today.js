@@ -8,7 +8,8 @@ import { accountsList } from './forms.js';
 import { displayBalance } from '../model.js';
 import { allOccurrences } from '../plan.js';
 import { canUndo, selfCheck, balances } from '../model.js';
-import { openOccurrenceSheet, field, errorBox, showError } from './forms.js';
+import { openOccurrenceSheet, field, errorBox, showError, confirmedBadge, confirmBalance, openCheckSheet, lastCheckOf } from './forms.js';
+import { parsePounds, penceToInput } from '../money.js';
 import { markPaid, setOccurrence } from '../commands.js';
 import { payRun } from '../payrun.js';
 import { currentRunKey } from './payday.js';
@@ -25,6 +26,7 @@ export function renderToday(ctx) {
   const heroFoot = !sp ? '' : sp.spare >= 0 ? `Spare in your current account until payday, ${esc(longDate(nextPay))} (${days} day${days === 1 ? '' : 's'})`
     : `Your current account is ${money(-sp.spare)} short of what it needs before payday, ${esc(longDate(nextPay))}`;
   const tiles = homeTiles(ctx, safe, sp);
+  const featured = featuredCards(ctx, safe, sp);
 
   const occ = allOccurrences(s, start, addDays(today, 7), today);
   const overdue = occ.filter(o => o.status === 'overdue');
@@ -51,6 +53,9 @@ export function renderToday(ctx) {
   ctx.afterRender = el => {
     el.querySelector('[data-explain]')?.addEventListener('click', () => explain(ctx, safe, lastCheck));
     el.querySelector('[data-choose]')?.addEventListener('click', () => chooseTiles(ctx));
+    el.querySelector('[data-confirm-main]')?.addEventListener('click', () => confirmBalance(ctx, main));
+    el.querySelector('[data-correct-main]')?.addEventListener('click', () => openCheckSheet(ctx, main));
+    el.querySelector('[data-cushion]')?.addEventListener('click', () => cushionSheet(ctx));
     el.querySelectorAll('[data-paid]').forEach(b => b.onclick = async () => {
       const o = overdue.find(x => x.key === b.dataset.paid);
       try { await ctx.dispatch(markPaid(ctx.state, o.key, { date: o.date, amount: o.remaining || o.amount }, today), { message: `${o.name}: marked as gone` }); } catch (err) { toast(err.message, { warn: true }); }
@@ -75,19 +80,7 @@ export function renderToday(ctx) {
   return `
   <header class="topbar"><div><h1>Today</h1><div class="sub">${esc(longDate(today))}</div></div>
     <a class="iconbtn" href="#/settings" aria-label="Settings">${icon('gear')}</a></header>
-  <div class="hero ${cls}">
-    <div class="label">${sp && sp.spare < 0 ? 'Short before payday' : 'Spare to spend'}</div>
-    <div class="big amount" aria-live="polite">${heroText}</div>
-    <div class="foot">${heroFoot}</div>
-    ${sp ? `<div class="herolines">
-      <div><span>In ${esc(s.account[main]?.name || 'current account')} now</span><b class="amount">${money(sp.now)}</b></div>
-      <div><span>Still to go out before payday</span><b class="amount">−${money(sp.out)}</b></div>
-      ${sp.in ? `<div><span>Still to come in</span><b class="amount">+${money(sp.in)}</b></div>` : ''}
-      ${sp.topups ? `<div><span>Top-ups other accounts need</span><b class="amount">−${money(sp.topups)}</b></div>` : ''}
-      ${sp.timing ? `<div><span>Money arrives after it’s needed</span><b class="amount">−${money(sp.timing)}</b></div>` : ''}
-      <div><span>Cushion you keep</span><b class="amount">−${money(sp.cushion)}</b></div></div>
-    <button type="button" data-explain>See every payment</button>` : ''}
-  </div>
+  ${featured}
   ${tiles}
   ${payCard}
   ${backupLine(ctx)}
@@ -115,38 +108,87 @@ export function spareParts(safe) {
   return { now: safe.balance, out, in: inc, topups: safe.topupTotal, timing, cushion: safe.cushion, spare };
 }
 
+// The main account, as recorded, beside what is free to spend before payday.
+function featuredCards(ctx, safe, sp) {
+  const s = ctx.state, today = ctx.today();
+  const main = s.setting.mainAccount?.value || 'acc-current';
+  const a = s.account[main];
+  if (!a) return '';
+  const now = balances(s, today)[main];
+  const next = safe ? [...safe.outgoing].sort((x, y) => x.date.localeCompare(y.date))[0] : null;
+  const days = safe ? daysBetween(today, safe.nextPayday) : null;
+  const unalloc = sp ? sp.spare + sp.cushion : null;
+  return `<div class="feature">
+    <div class="feature-head"><a href="#/account/${encodeURIComponent(main)}" class="feature-name">${esc(a.name)} ›</a>${confirmedBadge(s, main, today)}</div>
+    <div class="feature-big amount">${money(now)}</div>
+    <div class="muted small">Recorded balance · not a forecast</div>
+    ${next ? `<div class="feature-next"><div><div class="eyebrow">Next reserved payment</div><div class="small"><strong>${esc(next.label)}</strong> · ${next.overdue && next.occ ? `was due ${esc(shortDate(s.occ[next.occ]?.date || next.occ.split('|')[1]))} ${chip('overdue')}` : esc(shortDate(next.date))}</div></div>${signed(next.amount, 'out')}</div>` : ''}
+    <div class="btnrow"><button class="btn" data-confirm-main>✓ Confirm</button><button class="btn" data-correct-main>Correct</button></div>
+  </div>
+  ${sp ? `<div class="feature">
+    <div class="eyebrow">${esc(a.name)} · today’s position</div>
+    <div class="small" style="font-weight:650;margin-top:6px">${sp.spare < 0 ? 'Short before payday' : 'Available to spend'}</div>
+    <div class="feature-big amount ${sp.spare < 0 ? 'out' : 'avail'}">${sp.spare < 0 ? '−' : ''}${money(Math.abs(sp.spare))}</div>
+    <div class="muted small">After your scheduled payments and safety cushion, until payday on ${esc(longDate(safe.nextPayday))} (${days} day${days === 1 ? '' : 's'}).</div>
+    <div class="lines" style="margin-top:8px">
+      <button class="line linebtn" data-explain><span><strong>Reserved for ${safe.outgoing.length} payment${safe.outgoing.length === 1 ? '' : 's'}</strong> <span class="muted small">not yet paid ›</span></span>${signed(sp.out, 'out')}</button>
+      ${sp.in ? `<div class="line"><span>Still to come in</span>${signed(sp.in, 'in')}</div>` : ''}
+      ${sp.topups ? `<div class="line"><span>Top-ups other accounts need</span>${signed(sp.topups, 'out')}</div>` : ''}
+      ${sp.timing ? `<div class="line"><span>Money arrives after it’s needed</span>${signed(sp.timing, 'out')}</div>` : ''}
+      <div class="line"><span>Unallocated before cushion</span><strong class="amount ${unalloc < 0 ? 'out' : 'in'}">${unalloc < 0 ? '−' : ''}${money(Math.abs(unalloc))}</strong></div>
+      <div class="line"><span>Safety cushion <button class="chipbtn" data-cushion>Edit</button></span><strong class="amount">${money(sp.cushion)}</strong></div>
+    </div></div>` : ''}`;
+}
+
+function cushionSheet(ctx) {
+  const cur = ctx.state.setting.cushion?.value || 0;
+  sheet('Safety cushion', `<form novalidate><p class="muted small">Money you always keep in your current account and never count as available.</p>
+    ${field('Cushion (£)', `<input class="big" name="amount" inputmode="decimal" value="${esc(penceToInput(cur))}">`)}${errorBox()}
+    <div class="btnrow"><button class="btn primary block" type="submit">Save</button></div></form>`, el => {
+    el.querySelector('form').onsubmit = async e => {
+      e.preventDefault();
+      const v = parsePounds(e.target.amount.value);
+      if (v === null || v < 0) { showError(el, new Error('Enter an amount like 20.00')); return; }
+      await ctx.dispatch(setSetting(ctx.state, 'cushion', v, `Safety cushion set to ${money(v)}`));
+    };
+  });
+}
+
 function defaultTiles(s) {
-  const list = accountsList(s, { types: ['bank', 'pot'] }).filter(a => a.tracked !== false);
-  const order = ['main', 'bills', 'allowance', 'savings', 'holding', 'other'];
+  const main = s.setting.mainAccount?.value || 'acc-current';
+  const list = accountsList(s, { types: ['bank', 'pot'] }).filter(a => a.tracked !== false && a.id !== main);
+  const order = ['bills', 'allowance', 'savings', 'holding', 'other'];
   return [...list].sort((a, b) => order.indexOf(roleOf(s, a)) - order.indexOf(roleOf(s, b))).slice(0, 4).map(a => a.id);
 }
 export function tileIds(s) {
-  const chosen = (s.setting.homeAccounts?.value || []).filter(id => s.account[id] && !s.account[id].archived);
+  const main = s.setting.mainAccount?.value || 'acc-current';
+  const chosen = (s.setting.homeAccounts?.value || []).filter(id => s.account[id] && !s.account[id].archived && id !== main);
   return chosen.length ? chosen : defaultTiles(s);
 }
-function homeTiles(ctx, safe, sp) {
+function homeTiles(ctx, safe) {
   const s = ctx.state, today = ctx.today();
   const bal = balances(s, today);
   const ids = tileIds(s);
   const lows = {};
   for (const t of safe?.topups || []) lows[t.account] = t;
-  return `<section style="margin-top:16px"><div style="display:flex;justify-content:space-between;align-items:center"><h2 style="margin:0">Accounts</h2><button class="btn small" data-choose>Choose</button></div>
+  return `<section style="margin-top:18px"><div style="display:flex;justify-content:space-between;align-items:center"><h2 style="margin:0">Your other accounts</h2><button class="btn small" data-choose>Customise</button></div>
     <div class="tiles">${ids.map(id => {
       const a = s.account[id], role = roleOf(s, a), v = a.tracked === false ? null : displayBalance(a, bal[id]);
-      const note = role === 'main' && sp ? (sp.spare >= 0 ? `${money(sp.spare)} spare` : `${money(-sp.spare)} short`)
-        : lows[id] ? `${money(lows[id].amount)} short by ${shortDate(lows[id].date)}`
-        : role === 'bills' ? 'Covers payments to payday'
-        : role === 'allowance' ? 'To spend'
-        : a.target ? `of ${money(a.target)} target` : (ROLES[role]?.label || '');
-      return `<a class="tile-acc ${lows[id] || (role === 'main' && sp && sp.spare < 0) ? 'warn' : ''}" href="#/account/${encodeURIComponent(id)}">
-        <span class="nm">${esc(a.name)}</span><strong class="amount ${v < 0 ? 'out' : ''}">${v == null ? '—' : money(v)}</strong><span class="nt">${esc(note)}</span></a>`;
+      const need = a.target != null && v != null ? Math.max(0, a.target - v) : null;
+      const note = lows[id] ? `${money(lows[id].amount)} short by ${shortDate(lows[id].date)}`
+        : a.type === 'card' ? 'owed'
+        : need ? `${money(need)} to reach ${money(a.target)}` : need === 0 ? `Target ${money(a.target)} reached` : '';
+      return `<a class="tile-acc ${lows[id] ? 'warn' : ''}" href="#/account/${encodeURIComponent(id)}">
+        <span class="nm">${esc(a.name)}</span><strong class="amount ${v < 0 && a.type !== 'card' ? 'out' : ''}">${v == null ? '—' : money(v)}</strong>
+        ${note ? `<span class="nt">${esc(note)}</span>` : ''}<span class="nt">${confirmedBadge(s, id, today)}</span></a>`;
     }).join('')}</div></section>`;
 }
 function chooseTiles(ctx) {
   const s = ctx.state;
   const picked = new Set(tileIds(s));
-  const list = accountsList(s, { types: ['bank', 'pot', 'card'] }).filter(a => a.tracked !== false);
-  sheet('Accounts on Today', `<p class="muted small">Choose up to four. Tap one on Today to go straight to it.</p>
+  const main = s.setting.mainAccount?.value || 'acc-current';
+  const list = accountsList(s, { types: ['bank', 'pot', 'card'] }).filter(a => a.tracked !== false && a.id !== main);
+  sheet('Your other accounts', `<p class="muted small">Choose up to four to show on Today. Tap one there to go straight to it.</p>
     ${list.map(a => `<div class="toggle"><span>${esc(a.name)}</span><button type="button" data-pick="${esc(a.id)}" aria-pressed="${picked.has(a.id)}">${picked.has(a.id) ? 'Shown' : 'Show'}</button></div>`).join('')}
     <div class="error" role="alert" hidden></div><div class="btnrow"><button class="btn primary block" data-save>Save</button></div>`, el => {
     el.querySelectorAll('[data-pick]').forEach(b => b.onclick = () => {
@@ -189,7 +231,7 @@ function overdueGroups(ctx, overdue) {
   return Object.entries(groups).map(([acc, list]) => list.length === 1 ? `<div class="list" style="margin-top:10px">${overdueRow(ctx, list[0])}</div>`
     : `<div class="card" style="margin-top:10px"><div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline"><strong>${list.length} from ${esc(s.account[acc]?.name || 'an account')}</strong>${signed(list.reduce((t, o) => t + (o.remaining || o.amount), 0), 'out')}</div>
       <p class="muted small">${esc(list.map(o => o.name).join(', '))}</p>
-      <div class="btnrow"><button class="btn small primary" data-allgone="${esc(acc)}">All gone</button><a class="btn small" href="#/account/${encodeURIComponent(acc)}">Check bank</a></div>
+      <div class="btnrow"><button class="btn small primary" data-allgone="${esc(acc)}">All gone</button><a class="btn small" href="#/account/${encodeURIComponent(acc)}">Correct balance</a></div>
       <details class="fold"><summary style="font-size:15px">One at a time</summary><div class="list">${list.map(o => overdueRow(ctx, o)).join('')}</div></details></div>`).join('');
 }
 function overdueRow(ctx, o) {
