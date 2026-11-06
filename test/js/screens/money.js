@@ -2,7 +2,11 @@
 import { esc, money, icon, signed, chip } from '../ui.js';
 import { longDate, shortDate } from '../calendar.js';
 import { balances, displayBalance } from '../model.js';
-import { accountsList, openCheckSheet, openTxnSheet, txnLine, txnAmount, txnTitle, txnKindIcon, openAddSheet, openAccountSettings } from './forms.js';
+import { accountsList, openCheckSheet, openTxnSheet, txnLine, txnAmount, txnTitle, txnKindIcon, openAddSheet, openAccountSettings, confirmedBadge, confirmBalance, openOccurrenceSheet } from './forms.js';
+import { allOccurrences, planPeriods } from '../plan.js';
+import { periodFor, addDays } from '../calendar.js';
+import { markPaid } from '../commands.js';
+import { toast } from '../ui.js';
 import { roleOf, ROLES } from '../roles.js';
 import { forecastAll } from './plan.js';
 
@@ -57,20 +61,40 @@ export function renderAccount(ctx, id) {
   const outSum = real.filter(t => t.from === id).reduce((x, t) => x + t.amount, 0);
   const corr = txns.filter(t => t.kind === 'adjust').reduce((x, t) => x + (t.to === id ? t.amount : -t.amount), 0);
   const since = a.openingDate || s.setting.startDate?.value;
+  // What is reserved in this account: payments still to leave it before next payday.
+  const per = periodFor(today, planPeriods(s));
+  const reserved = per ? allOccurrences(s, s.setting.startDate?.value || per.start, per.end, today)
+    .filter(o => (o.from === id || o.to === id) && ['overdue', 'planned', 'part'].includes(o.status)) : [];
+  const resOut = reserved.filter(o => o.from === id).reduce((t, o) => t + (o.remaining || o.amount), 0);
+  const need = a.target != null && a.tracked !== false ? Math.max(0, a.target - bal) : null;
   ctx.afterRender = el => {
     el.querySelector('[data-check]')?.addEventListener('click', () => openCheckSheet(ctx, id));
-    el.querySelector('[data-add]')?.addEventListener('click', () => openAddSheet(ctx, { from: id }));
+    el.querySelector('[data-confirm]')?.addEventListener('click', () => confirmBalance(ctx, id));
+    el.querySelector('[data-move]')?.addEventListener('click', () => openAddSheet(ctx, { kind: 'transfer', from: id }));
+    el.querySelector('[data-add]')?.addEventListener('click', () => openAddSheet(ctx, { kind: 'spend', from: id }));
+    el.querySelectorAll('[data-occ]').forEach(b => b.onclick = () => openOccurrenceSheet(ctx, b.dataset.occ));
+    el.querySelectorAll('[data-paid]').forEach(b => b.onclick = async e => {
+      e.stopPropagation();
+      const o = reserved.find(x => x.key === b.dataset.paid);
+      try { await ctx.dispatch(markPaid(ctx.state, o.key, { date: o.date <= today ? o.date : today, amount: o.remaining || o.amount }, today), { message: `${o.name}: ${money(o.remaining || o.amount)} recorded` }); } catch (err) { toast(err.message, { warn: true }); }
+    });
     el.querySelector('[data-settings]')?.addEventListener('click', () => openAccountSettings(ctx, id));
     el.querySelectorAll('[data-txn]').forEach(b => b.onclick = () => openTxnSheet(ctx, b.dataset.txn));
   };
   return `<a class="back" href="#/money">${icon('back')} Money</a>
   <header class="topbar"><div><h1>${esc(a.name)}</h1><div class="sub">${esc(ROLES[roleOf(s, a)]?.label || '')}</div></div><button class="btn small" data-settings>Settings</button></header>
-  <div class="card"><div class="muted small">${a.type === 'card' ? 'Owed now' : 'Balance now'}</div>
-    <div class="amount" style="font-size:40px;font-weight:750">${a.tracked === false ? 'Not tracked' : money(bal)}</div>
-    <p class="muted small">${c ? `Updated from your bank ${esc(longDate(c.date))}.` : chip('overdue', 'Not updated') + ' Never updated from your bank.'}
-    ${nextVal != null ? `<br>Expected just before next payday: <strong>${money(nextVal)}</strong>.` : ''}</p>
-    ${a.tracked === false ? '' : `<div class="btnrow"><button class="btn primary" data-check>Update balance</button><button class="btn" data-add>Record</button></div>`}
+  <div class="feature"><div class="feature-head"><span class="muted small">${a.type === 'card' ? 'Owed now' : 'Balance now'}</span>${a.tracked === false ? '' : confirmedBadge(s, id, today)}</div>
+    <div class="feature-big amount">${a.tracked === false ? 'Not tracked' : money(bal)}</div>
+    <div class="muted small">Recorded balance · not a forecast${nextVal != null && nextVal !== bal ? `. Expected the day before next payday: <strong>${money(nextVal)}</strong>` : ''}</div>
+    ${need != null ? `<p class="small" style="margin-top:8px">${need ? `<strong>${money(need)}</strong> still needed to reach ${money(a.target)}.` : `Target of ${money(a.target)} reached.`}</p>` : ''}
+    ${a.tracked === false ? '' : `<div class="btngrid"><button class="btn" data-confirm>✓ Confirm</button><button class="btn" data-check>Correct</button>
+      <button class="btn" data-move>Move money</button><button class="btn" data-add>${a.type === 'card' ? 'Card spend' : 'Record spend'}</button></div>
+      <p class="muted small" style="margin-top:8px">Confirm when the bank shows the same figure. Correct when it doesn’t.</p>`}
   </div>
+  ${reserved.length ? `<section><h2>Reserved before payday ${resOut ? `<span class="muted small">${money(resOut)}</span>` : ''}</h2><div class="list">${reserved.map(o => `<div class="row static"><div class="main" data-occ="${esc(o.key)}" role="button" tabindex="0" style="cursor:pointer"><div class="title">${esc(o.name)}</div>
+      <div class="meta">${o.status === 'overdue' ? chip('overdue') + ' ' : ''}${esc(shortDate(o.date))}${o.variable ? ' · varies' : ''}</div></div>${signed(o.remaining || o.amount, o.to === id ? 'in' : 'out')}
+      <button class="donebtn" data-paid="${esc(o.key)}">${o.to === id ? (o.kind === 'income' ? 'Arrived' : 'In') : 'Paid'}</button></div>`).join('')}</div>
+      <p class="muted small">Paid records it from this account and updates every account it touches.</p></section>` : ''}
   ${a.tracked === false ? '' : `<details class="card fold" style="margin-top:10px"><summary>How this balance is made</summary><div class="lines">
     <div class="line"><span>Starting balance${since ? `<small>${esc(longDate(since))}</small>` : ''}</span><strong class="amount">${money(displayBalance(a, a.opening))}</strong></div>
     <div class="line"><span>Money in<small>${real.filter(t => t.to === id).length} entries</small></span>${signed(inSum, 'in')}</div>

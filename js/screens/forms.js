@@ -51,9 +51,15 @@ export function txnDir(state, t, accountId = null) {
   }
   return t.to ? 'in' : 'out';
 }
-export function txnAmount(state, t, accountId = null) { return signed(t.amount, txnDir(state, t, accountId)); }
+export function txnAmount(state, t, accountId = null) {
+  const acc = accountId ? state.account[accountId] : null;
+  if (acc?.type === 'card') return t.to === accountId ? `<span class="amount in">${money(t.amount)}<small>repaid</small></span>` : `<span class="amount out">+${money(t.amount)}<small>owed</small></span>`;
+  return signed(t.amount, txnDir(state, t, accountId));
+}
 export function txnTitle(state, t, accountId = null) {
   if (t.kind === 'adjust') return t.desc.startsWith('Bank correction') ? 'Bank correction' : `Correction: ${t.desc}`;
+  const toCard = t.to && state.account[t.to]?.type === 'card';
+  if (toCard && t.from) return accountId === t.to ? 'Repayment' : `${accName(state, t.to)} repayment`;
   if (accountId && t.from && t.to && /^transfer\b/i.test(t.desc || 'transfer')) return t.to === accountId ? `From ${accName(state, t.from)}` : `To ${accName(state, t.to)}`;
   return t.desc;
 }
@@ -316,6 +322,25 @@ export function openRuleSheet(ctx, ruleId = null) {
   });
 }
 
+// ---- Confirm: the balance shown matches the bank (one tap, undoable) ------------
+export function lastCheckOf(state, id) {
+  return Object.values(state.check).filter(c => c.account === id).sort((a, b) => (b.at || b.date).localeCompare(a.at || a.date))[0] || null;
+}
+export function confirmedBadge(state, id, today) {
+  const c = lastCheckOf(state, id);
+  if (!c) return '<span class="badge warn">Not confirmed yet</span>';
+  const when = c.at ? new Date(c.at) : null;
+  const time = when && !c.imported ? ` · ${when.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}` : '';
+  const days = Math.round((Date.parse(today) - Date.parse(c.date)) / 86400000);
+  return `<span class="badge ${days > 14 ? 'warn' : 'ok'}">${days > 14 ? '' : '✓ '}Confirmed ${esc(shortDate(c.date))}${time}</span>`;
+}
+export async function confirmBalance(ctx, accountId) {
+  const s = ctx.state, a = s.account[accountId], today = ctx.today();
+  const value = balances(s, today)[accountId];
+  const { event } = checkBalance(s, accountId, value, today);
+  await ctx.dispatch({ ...event, label: `Confirmed ${a.name}: ${money(displayBalance(a, value))} matches the bank` }, { message: `${a.name} confirmed at ${money(displayBalance(a, value))}` });
+}
+
 // ---- Update an account's balance ---------------------------------------------------
 // One step: type what the bank shows and save. Anything that was due before today
 // and not yet marked is listed first (set to "Gone" by default, because a bank
@@ -336,9 +361,9 @@ export function openCheckSheet(ctx, accountId) {
       ${due.map((o, i) => `<div class="toggle"><span>${esc(o.name)}<br><small class="muted">${esc(shortDate(o.date))} · ${money(o.amt)}</small></span><button type="button" data-due="${i}" aria-pressed="true">${o.to === accountId ? 'Arrived' : 'Gone'}</button></div>`).join('')}` : ''}
     <div class="diffbox" data-diff hidden></div>
     ${field('Note (optional)', `<input name="reason" maxlength="100" placeholder="e.g. Cash withdrawal">`)}
-    ${errorBox()}<div class="btnrow"><button class="btn primary block" type="submit">Update balance</button></div>
+    ${errorBox()}<div class="btnrow"><button class="btn primary block" type="submit">Correct balance</button></div>
     <p class="muted small">Saved as a dated correction, so the history still adds up. You can undo it straight after, or later from History.</p></form>`;
-  sheet(`Update ${a.name}`, body, el => {
+  sheet(`Correct ${a.name}`, body, el => {
     const f = el.querySelector('form');
     setTimeout(() => f.bank.focus(), 80);
     const show = () => {
