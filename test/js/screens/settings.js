@@ -10,7 +10,7 @@ import { checkRepo, versions, download, openBackup } from '../backup.js';
 import { validateExport, startChoices, openingBalances, buildImport, verifyImport, START_DATE } from '../importer.js';
 import { field, errorBox, showError, accountsList } from './forms.js';
 
-const VERSION = '1.1.0';
+const VERSION = '1.1.1';
 
 // ---- First run ----------------------------------------------------------------
 export function renderWelcome(ctx) {
