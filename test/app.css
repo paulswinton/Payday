@@ -20,6 +20,7 @@
   --text: #000; --muted: #4f4f4f; --faint: #8a8a8a; --red: #c62828; --pos: #2f6b00; --accent-ink: #3f7f00; --in: #157f3b; --out: #c62828; color-scheme: light;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0; background: var(--bg); color: var(--text);

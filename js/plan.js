@@ -85,6 +85,7 @@ export function paymentsIndex(state) {
 // All occurrences of all rules in a date window, with their status today.
 export function allOccurrences(state, from, to, today) {
   const pays = paymentsIndex(state);
+  const ends = Object.fromEntries(planPeriods(state).map(p => [p.key, p.end]));
   const out = [];
   for (const r of Object.values(state.rule)) {
     for (const o of occurrences(r, from, to, state)) {
@@ -93,7 +94,9 @@ export function allOccurrences(state, from, to, today) {
       const paidAmount = list.reduce((t, x) => t + x.amount, 0);
       // A goal instalment paid in part stays open for the rest; anything else counts as paid once recorded.
       const part = !!o.goal && list.length > 0 && paidAmount < o.amount;
-      const status = part ? (o.date < today ? 'overdue' : 'part') : txn ? 'paid' : o.skipped ? 'skipped' : o.date < today ? 'overdue' : 'planned';
+      // A payment whose date isn't known yet is only overdue once its payday period has ended.
+      const lateFrom = o.undated && o.period && ends[o.period] ? ends[o.period] : o.date;
+      const status = part ? (o.date < today ? 'overdue' : 'part') : txn ? 'paid' : o.skipped ? 'skipped' : lateFrom < today ? 'overdue' : 'planned';
       out.push({ ...o, status, txn, paidAmount, remaining: part ? o.amount - paidAmount : (txn ? 0 : o.amount), part });
     }
   }

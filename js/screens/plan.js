@@ -109,6 +109,8 @@ export function renderPeriod(ctx, key) {
   const st = proj.periods.find(x => x.key === key);
   const main = mainAccountId(s);
   const f = periodFlow(ctx, p, st?.acc[main]);
+  // Top-ups for bills accounts are worked out, not fixed, so show the forecast amount.
+  const fundRows = proj.flows.filter(x => x.fund && x.fund.period === key && x.account === main);
   const salary = occ.find(o => o.ruleId === 'r-salary');
   const total = arr => arr.reduce((t, o) => t + (o.status === 'paid' ? o.txn.amount : o.part ? o.remaining : o.amount), 0);
   ctx.afterRender = el => {
@@ -127,7 +129,8 @@ export function renderPeriod(ctx, key) {
     <div class="line total"><span>${f.when === 'past' ? 'Left at the end' : 'Left before next payday'}</span><strong class="amount ${f.left < 0 ? 'out' : ''}">${money(f.left)}</strong></div></div>
   <div class="btnrow"><a class="btn" href="#/payday/${p.key}">Payday checklist</a></div>
   ${overdue.length ? `<section><h2>Overdue ${chip('overdue', String(overdue.length))}</h2><div class="list">${overdue.map(o => occRow(ctx, o)).join('')}</div></section>` : ''}
-  ${toCome.length ? `<section><h2>Still to come <span class="muted small">${money(total(toCome))}</span></h2><div class="list">${toCome.map(o => occRow(ctx, o)).join('')}</div></section>` : ''}
+  ${toCome.length || fundRows.length ? `<section><h2>Still to come</h2><div class="list">${fundRows.map(f => `<a class="row" href="#/payday/${p.key}"><div class="tile">${icon('transfer')}</div><div class="main"><div class="title">${esc(f.label)}</div>
+      <div class="meta">${esc(shortDate(f.date))} · worked out on payday from what its payments need</div></div>${signed(f.amount, 'move')}</a>`).join('')}${toCome.map(o => occRow(ctx, o)).join('')}</div></section>` : ''}
   ${done.length ? `<section><details class="fold"><summary>Done (${done.length}) · ${money(total(done))}</summary><div class="list">${done.map(o => occRow(ctx, o)).join('')}</div></details></section>` : ''}
   ${skipped.length ? `<section><details class="fold"><summary>Skipped (${skipped.length})</summary><div class="list">${skipped.map(o => occRow(ctx, o)).join('')}</div></details></section>` : ''}
   ${other.length ? `<section><h2>Other money recorded</h2><div class="list">${other.map(t => `<button class="row" data-txn="${esc(t.id)}"><div class="tile">${icon(txnKindIcon(t))}</div><div class="main"><div class="title">${esc(t.desc)}</div><div class="meta">${esc(shortDate(t.date))} · ${esc(txnLine(s, t))}</div></div>${txnAmount(s, t)}</button>`).join('')}</div></section>` : ''}`;

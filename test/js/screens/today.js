@@ -92,7 +92,7 @@ export function renderToday(ctx) {
   ${payCard}
   ${backupLine(ctx)}
   ${overdue.length ? `<section><h2>Overdue ${chip('overdue', String(overdue.length))}</h2>
-    <p class="muted small">Past their date and not marked. Each is still held back from safe-to-spend until you say what happened.</p>
+    <p class="muted small">Past their date and not marked. Tap Gone if your bank shows it, or tap the payment to skip it or change its date.</p>
     ${overdueGroups(ctx, overdue)}</section>` : ''}
   ${attention.length ? `<section><h2>Needs attention</h2>${attention.join('')}</section>` : ''}
   <section><h2>Next 7 days</h2>${soon.length ? `<div class="list">${soon.map(o => occRow(ctx, o)).join('')}</div>` : '<div class="card muted">Nothing planned in the next 7 days.</div>'}</section>
@@ -193,9 +193,9 @@ function overdueGroups(ctx, overdue) {
       <details class="fold"><summary style="font-size:15px">One at a time</summary><div class="list">${list.map(o => overdueRow(ctx, o)).join('')}</div></details></div>`).join('');
 }
 function overdueRow(ctx, o) {
-  return `<div class="row static" style="flex-wrap:wrap"><div class="main" data-occ="${esc(o.key)}" role="button" tabindex="0" style="cursor:pointer"><div class="title">${esc(o.name)}</div>
-    <div class="meta">Was due ${esc(longDate(o.date))}</div></div><div class="amount">${signed(o.remaining || o.amount, occDir(ctx.state, o))}</div>
-    <div class="btnrow" style="width:100%;margin-top:4px"><button class="btn small primary" data-paid="${esc(o.key)}">${o.kind === 'income' ? 'Arrived' : 'Gone'}</button><button class="btn small" data-nope="${esc(o.key)}">Didn’t happen</button><button class="btn small" data-moved="${esc(o.key)}">New date</button></div></div>`;
+  return `<div class="row static"><div class="main" data-occ="${esc(o.key)}" role="button" tabindex="0" style="cursor:pointer"><div class="title">${esc(o.name)}</div>
+    <div class="meta">Due ${esc(shortDate(o.date))} · tap for more</div></div>${signed(o.remaining || o.amount, occDir(ctx.state, o))}
+    <button class="donebtn" data-paid="${esc(o.key)}">${o.kind === 'income' ? 'Arrived' : 'Gone'}</button></div>`;
 }
 function movedSheet(ctx, o) {
   sheet(`${o.name}: new date`, `<form novalidate>${field('It will happen on', `<input type="date" name="date" value="${esc(ctx.today())}">`)}${errorBox()}
@@ -221,19 +221,21 @@ function explainList(ctx, safe, lastCheck) {
   const s = ctx.state;
   const main = s.setting.mainAccount?.value || 'acc-current';
   const name = s.account[main]?.name || 'Current account';
-  const out = safe.outgoing.reduce((t, f) => t + f.amount, 0);
-  const inc = safe.incoming.reduce((t, f) => t + f.amount, 0);
+  const sp = spareParts(safe);
   const body = `<div class="card lines">
-    <div class="line"><span>${esc(name)} now</span><strong class="amount">${money(safe.balance)}</strong></div>
-    <div class="line"><span>Still to go out before payday (${safe.outgoing.length})</span><strong class="amount">${money(-out)}</strong></div>
-    ${inc ? `<div class="line"><span>Still to come in before payday</span><strong class="amount in">${money(inc, { sign: true })}</strong></div>` : ''}
-    <div class="line"><span>Lowest point${safe.lowDate ? `, ${esc(shortDate(safe.lowDate))}` : ''}</span><strong class="amount">${money(safe.lowest)}</strong></div>
-    ${safe.topupTotal ? `<div class="line"><span>Top-ups for other accounts</span><strong class="amount">${money(-safe.topupTotal)}</strong></div>` : ''}
-    <div class="line"><span>Cushion you keep</span><strong class="amount">${money(-safe.cushion)}</strong></div>
-    <div class="line total"><span>Safe to spend</span><strong class="amount">${money(safe.safe)}</strong></div></div>
-    <p class="muted small">${lastCheck ? `Last checked against your bank ${esc(longDate(lastCheck.date))}.` : 'Not yet checked against your bank.'} Expected salary is never counted until you confirm it has arrived.</p>
-    <section><h2>Going out before payday</h2><div class="list">${safe.outgoing.map(f => `<div class="row" style="cursor:default"><div class="main"><div class="title">${esc(f.label)}</div><div class="meta">${f.overdue ? '<span class="tag overdue">Overdue</span> ' : ''}${esc(shortDate(f.date))}${f.estimate ? ' · estimate' : ''}</div></div><div class="amount">${money(-f.amount)}</div></div>`).join('') || '<div class="row muted">Nothing</div>'}</div></section>
-    ${safe.topups.length ? `<section><h2>Accounts that need topping up</h2><div class="list">${safe.topups.map(t => `<div class="row" style="cursor:default"><div class="main"><div class="title">${esc(t.name)}</div><div class="meta">Short on ${esc(shortDate(t.date))}</div></div><div class="amount">${money(t.amount)}</div></div>`).join('')}</div></section>` : ''}`;
-  sheet('How safe-to-spend is worked out', body);
+    <div class="line"><span>${esc(name)} now</span><strong class="amount">${money(sp.now)}</strong></div>
+    <div class="line"><span>Still to go out before payday (${safe.outgoing.length})</span>${signed(sp.out, 'out')}</div>
+    ${sp.in ? `<div class="line"><span>Still to come in before payday</span>${signed(sp.in, 'in')}</div>` : ''}
+    ${sp.timing ? `<div class="line"><span>Money arrives after it’s needed<small>lowest point ${esc(shortDate(safe.lowDate))}</small></span>${signed(sp.timing, 'out')}</div>` : ''}
+    ${sp.topups ? `<div class="line"><span>Top-ups other accounts need</span>${signed(sp.topups, 'out')}</div>` : ''}
+    <div class="line"><span>Cushion you keep</span>${signed(sp.cushion, 'out')}</div>
+    <div class="line total"><span>${sp.spare < 0 ? 'Short by' : 'Spare to spend'}</span><strong class="amount ${sp.spare < 0 ? 'out' : ''}">${money(Math.abs(sp.spare))}</strong></div></div>
+    <p class="muted small">${lastCheck ? `${esc(name)} last updated from your bank ${esc(longDate(lastCheck.date))}.` : `${esc(name)} has not been updated from your bank yet.`} Expected salary is never counted until you confirm it has arrived. Tap a payment to mark it paid, skip it or change it.</p>
+    <section><h2>Going out before payday</h2><div class="list">${safe.outgoing.map(f => `<button class="row" ${f.occ ? `data-occ="${esc(f.occ)}"` : 'disabled'}><div class="main"><div class="title">${esc(f.label)}</div><div class="meta">${f.overdue ? chip('overdue') + ' ' : ''}${esc(shortDate(f.date))}${f.estimate ? ' · estimate' : ''}</div></div>${signed(f.amount, 'out')}</button>`).join('') || '<div class="row muted">Nothing</div>'}</div></section>
+    ${safe.topups.length ? `<section><h2>Accounts that need topping up</h2><div class="list">${safe.topups.map(t => `<a class="row" href="#/account/${encodeURIComponent(t.account)}"><div class="main"><div class="title">${esc(t.name)}</div><div class="meta">Short on ${esc(shortDate(t.date))}</div></div><div class="amount">${money(t.amount)}</div></a>`).join('')}</div></section>` : ''}`;
+  sheet('Before payday', body, (el, close) => {
+    el.querySelectorAll('[data-occ]').forEach(b => b.onclick = () => { close(); openOccurrenceSheet(ctx, b.dataset.occ); });
+    el.querySelectorAll('a.row').forEach(a => a.onclick = () => close());
+  });
 }
 export { balances };

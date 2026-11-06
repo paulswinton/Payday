@@ -12,7 +12,7 @@ import { renderSettings, renderWelcome } from './screens/settings.js';
 import { openAddSheet } from './screens/forms.js';
 import { applyTheme } from './screens/settings.js';
 
-export const VERSION = '1.1.1';
+export const VERSION = '1.1.2';
 
 const ctx = {
   state: emptyState(), store: null, meta: {}, key: null,
@@ -152,7 +152,7 @@ async function init() {
     return;
   }
   document.getElementById('tab-add').addEventListener('click', () => openAddSheet(ctx));
-  window.addEventListener('hashchange', () => render());
+  window.addEventListener('hashchange', () => { closeSheet(); render(); });
   document.addEventListener('payday:backup', () => { if (/today|settings/.test(location.hash) || !location.hash) ctx.renderSameRoute(); });
   render();
   scheduleBackup(1500);

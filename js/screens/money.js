@@ -11,9 +11,9 @@ function lastCheck(s, id) {
 }
 function checkTag(s, id, today) {
   const c = lastCheck(s, id);
-  if (!c) return '<span class="tag warn">Not checked</span>';
+  if (!c) return '<span class="tag warn">Not updated</span>';
   const days = Math.round((Date.parse(today) - Date.parse(c.date)) / 86400000);
-  return days > 14 ? `<span class="tag warn">Checked ${days} days ago</span>` : `<span class="tag">Checked ${esc(shortDate(c.date))}</span>`;
+  return days > 14 ? `<span class="tag warn">Updated ${days} days ago</span>` : `<span class="tag">Updated ${esc(shortDate(c.date))}</span>`;
 }
 
 export function renderMoney(ctx) {
@@ -47,8 +47,9 @@ export function renderAccount(ctx, id) {
   const bal = displayBalance(a, raw);
   const txns = Object.values(s.txn).filter(t => t.from === id || t.to === id).sort((x, y) => y.date.localeCompare(x.date) || (y.created || '').localeCompare(x.created || ''));
   const proj = forecastAll(ctx);
-  const next = proj.periods.find(p => p.start > today);
-  const nextVal = next?.acc[id] ? displayBalance(a, next.acc[id].close) : null;
+  // The period we are in now: its close is the balance the day before next payday.
+  const cur = proj.periods.find(p => p.start <= today && today <= p.end);
+  const nextVal = cur?.acc[id] ? displayBalance(a, cur.acc[id].close) : null;
   const c = lastCheck(s, id);
   // How the balance is made up, so any figure can be traced.
   const real = txns.filter(t => t.kind !== 'adjust');
@@ -66,9 +67,9 @@ export function renderAccount(ctx, id) {
   <header class="topbar"><div><h1>${esc(a.name)}</h1><div class="sub">${esc(ROLES[roleOf(s, a)]?.label || '')}</div></div><button class="btn small" data-settings>Settings</button></header>
   <div class="card"><div class="muted small">${a.type === 'card' ? 'Owed now' : 'Balance now'}</div>
     <div class="amount" style="font-size:40px;font-weight:750">${a.tracked === false ? 'Not tracked' : money(bal)}</div>
-    <p class="muted small">${c ? `Checked against your bank ${esc(longDate(c.date))}${c.app != null && c.bank !== c.app ? `: ${money(Math.abs(c.bank - c.app))} difference found` : ''}.` : chip('overdue', 'Not checked') + ' Never checked against your bank.'}
+    <p class="muted small">${c ? `Updated from your bank ${esc(longDate(c.date))}.` : chip('overdue', 'Not updated') + ' Never updated from your bank.'}
     ${nextVal != null ? `<br>Expected just before next payday: <strong>${money(nextVal)}</strong>.` : ''}</p>
-    ${a.tracked === false ? '' : `<div class="btnrow"><button class="btn primary" data-check>Check bank</button><button class="btn" data-add>Record</button></div>`}
+    ${a.tracked === false ? '' : `<div class="btnrow"><button class="btn primary" data-check>Update balance</button><button class="btn" data-add>Record</button></div>`}
   </div>
   ${a.tracked === false ? '' : `<details class="card fold" style="margin-top:10px"><summary>How this balance is made</summary><div class="lines">
     <div class="line"><span>Starting balance${since ? `<small>${esc(longDate(since))}</small>` : ''}</span><strong class="amount">${money(displayBalance(a, a.opening))}</strong></div>
