@@ -19,7 +19,7 @@ const ctx = {
   state: emptyState(), store: null, meta: {}, key: null,
   backup: { status: 'off', message: 'Automatic backup is not set up yet.', at: null },
   persistence: { persisted: false, supported: false },
-  today: () => todayLocal(),
+  today: () => { if (window.PAYDAY_TEST) { try { const d = localStorage.getItem('payday-test-today'); if (d) return d; } catch { /* ignore */ } } return todayLocal(); },
   go: hash => { if (location.hash === hash) render(); else location.hash = hash; },
   render: () => render(),
 };

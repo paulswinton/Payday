@@ -168,6 +168,7 @@ export function renderSettings(ctx) {
       if (date) o[key] = date; else delete o[key];
       await ctx.dispatch(setSetting(ctx.state, 'paydayOverrides', o, date ? `Payday for ${key} moved to ${date}` : `Payday for ${key} back to normal`));
     });
+    el.querySelector('[data-testday]')?.addEventListener('submit', e => { e.preventDefault(); try { if (e.target.day.value) localStorage.setItem('payday-test-today', e.target.day.value); else localStorage.removeItem('payday-test-today'); } catch { /* ignore */ } toast(e.target.day.value ? `Pretending today is ${e.target.day.value}` : 'Back to the real date'); ctx.renderSameRoute(); });
     el.querySelector('[data-theme]')?.addEventListener('change', e => { try { localStorage.setItem('payday-theme', e.target.value); } catch { /* ignore */ } applyTheme(); });
     el.querySelector('[data-erase]')?.addEventListener('click', () => eraseSheet(ctx));
   };
@@ -176,6 +177,8 @@ export function renderSettings(ctx) {
     : `<span class="tag ${b.status === 'saving' || b.status === 'waiting' ? 'warn' : 'bad'}">${esc(b.status === 'saving' ? 'Saving' : b.status === 'waiting' ? 'Waiting' : 'Problem')}</span> ${esc(b.message)}`;
   return `<a class="back" href="#/today">${icon('back')} Today</a>
   <header class="topbar"><h1>Settings</h1></header>
+  ${window.PAYDAY_TEST ? `<section class="card" style="border-color:var(--orange)"><h2>Test copy: pretend today is</h2><p class="muted small">Jump to a payday (e.g. 26 November) to try the Done buttons. Empty = the real date.</p>
+    <form data-testday class="grid2" novalidate>${field('Date', `<input type="date" name="day" value="${esc(today === todayReal() ? '' : today)}">`)}<button class="btn primary" type="submit" style="align-self:end">Use it</button></form></section>` : ''}
   <section class="card"><h2>Automatic backup</h2><p>${statusLine}</p>
     <p class="muted small">Every change is saved on this phone straight away, then an encrypted copy goes to your private GitHub repository a few seconds later. GitHub keeps every earlier version.</p>
     <div class="btnrow">${!cfg ? '<button class="btn primary" data-setup>Set up backup</button>' : b.status === 'conflict' ? '<button class="btn primary" data-keep-phone>Keep this phone’s copy</button><button class="btn" data-use-backup>Use a backup copy</button>' : b.status === 'locked' ? '<button class="btn primary" data-unlock>Enter passphrase</button>' : '<button class="btn" data-now>Back up now</button><button class="btn" data-versions>Restore an earlier version</button>'}</div>
@@ -204,6 +207,7 @@ export function renderSettings(ctx) {
   <section class="card"><h2>Start again on this phone</h2><p class="muted small">Erases this phone’s copy only. Your GitHub backups are untouched.</p><button class="btn danger" data-erase>Erase this phone’s copy</button></section>`;
 }
 
+function todayReal() { const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`; }
 export function currentTheme() { try { return localStorage.getItem('payday-theme') || 'auto'; } catch { return 'auto'; } }
 export function applyTheme() {
   const t = currentTheme();
