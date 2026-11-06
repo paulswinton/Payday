@@ -39,6 +39,7 @@ export function renderToday(ctx) {
   if (s.setting.startCheckDone?.value === false) attention.push(banner('', 'Finish your 29 October start-up check', 'Confirm what went out between payday and 4 November.', '#/settings', 'Check'));
   for (const t of safe?.topups || []) attention.push(banner('', `${t.name} will be ${money(t.amount)} short`, `On ${longDate(t.date)}. Move money in before then. This is already taken off your spare figure.`, `#/account/${encodeURIComponent(t.account)}`, 'Open'));
 
+  const checks = toCheck(ctx, today);
   const recent = [...s.events].reverse().filter(e => !e.label.startsWith('Brought in')).slice(0, 4);
   const main = s.setting.mainAccount?.value || 'acc-current';
   const lastCheck = Object.values(s.check).filter(c => c.account === main).sort((a, b) => (b.at || b.date).localeCompare(a.at || a.date))[0];
@@ -88,6 +89,9 @@ export function renderToday(ctx) {
     <p class="muted small">Past their date and not marked. Tap Gone if your bank shows it, or tap the payment to skip it or change its date.</p>
     ${overdueGroups(ctx, overdue)}</section>` : ''}
   ${attention.length ? `<section><h2>Needs attention</h2>${attention.join('')}</section>` : ''}
+  ${checks.length ? `<section><details class="fold card"><summary>To check (${checks.length})</summary>
+    <p class="muted small">Figures Payday can’t be sure of until you check them against your bank, statements or letters.</p>
+    <div class="list">${checks.map(c => `<${c.href ? `a href="${c.href}"` : `button data-occ="${esc(c.occ)}"`} class="row"><div class="main"><div class="title">${esc(c.title)}</div><div class="meta">${esc(c.text)}</div></div>›</${c.href ? 'a' : 'button'}>`).join('')}</div></details></section>` : ''}
   <section><h2>Next 7 days</h2>${soon.length ? `<div class="list">${soon.map(o => occRow(ctx, o)).join('')}</div>` : '<div class="card muted">Nothing planned in the next 7 days.</div>'}</section>
   <section><h2>Recent changes</h2>${recent.length ? `<div class="list">${recent.map(e => {
     const ok = canUndo(s, e).ok && !e.undoes;
@@ -130,6 +134,7 @@ function featuredCards(ctx, safe, sp) {
     <div class="small" style="font-weight:650;margin-top:6px">${sp.spare < 0 ? 'Short before payday' : 'Available to spend'}</div>
     <div class="feature-big amount ${sp.spare < 0 ? 'out' : 'avail'}">${sp.spare < 0 ? '−' : ''}${money(Math.abs(sp.spare))}</div>
     <div class="muted small">After your scheduled payments and safety cushion, until payday on ${esc(longDate(safe.nextPayday))} (${days} day${days === 1 ? '' : 's'}).</div>
+    ${sp.spare < 0 ? (() => { const fs = firstShort(safe); return `<div class="banner bad" style="margin-top:10px"><span class="dot">!</span><div><strong>${fs ? `Not enough for ${esc(fs.name)} on ${esc(shortDate(fs.date))}` : 'Below your safety cushion'}</strong><p class="small muted">Move ${money(-sp.spare)} into ${esc(a.name)} to cover everything before payday${fs ? '' : ' and keep your cushion'}.</p></div></div>`; })() : ''}
     <div class="lines" style="margin-top:8px">
       <button class="line linebtn" data-explain><span><strong>Reserved for ${safe.outgoing.length} payment${safe.outgoing.length === 1 ? '' : 's'}</strong> <span class="muted small">not yet paid ›</span></span>${signed(sp.out, 'out')}</button>
       ${sp.in ? `<div class="line"><span>Still to come in</span>${signed(sp.in, 'in')}</div>` : ''}
@@ -138,6 +143,37 @@ function featuredCards(ctx, safe, sp) {
       <div class="line"><span>Unallocated before cushion</span><strong class="amount ${unalloc < 0 ? 'out' : 'in'}">${unalloc < 0 ? '−' : ''}${money(Math.abs(unalloc))}</strong></div>
       <div class="line"><span>Safety cushion <button class="chipbtn" data-cushion>Edit</button></span><strong class="amount">${money(sp.cushion)}</strong></div>
     </div></div>` : ''}`;
+}
+
+// Things whose figures are not yet certain: the V18 "review" list, worked out live.
+function toCheck(ctx, today) {
+  const s = ctx.state, out = [];
+  const bal = balances(s, today);
+  for (const a of Object.values(s.account)) {
+    if (a.archived) continue;
+    if (a.type === 'card' && a.tracked === false && Object.values(s.rule).some(r => !r.deleted && r.to === a.id)) {
+      out.push({ title: `What do you owe on ${a.name}?`, text: 'Enter it from your statement so repayments reduce the debt.', href: `#/account/${encodeURIComponent(a.id)}` });
+      continue;
+    }
+    if (a.tracked === false) continue;
+    const c = lastCheckOf(s, a.id);
+    const days = c ? Math.round((Date.parse(today) - Date.parse(c.date)) / 86400000) : null;
+    if (!c || days > 14) out.push({ title: `Confirm ${a.name}`, text: c ? `Last confirmed ${days} days ago (${money(displayBalance(a, bal[a.id]))} recorded).` : `Never confirmed against your bank (${money(displayBalance(a, bal[a.id]))} recorded).`, href: `#/account/${encodeURIComponent(a.id)}` });
+  }
+  for (const o of allOccurrences(s, s.setting.startDate?.value || today, addDays(today, 14), today)) {
+    if (!['planned', 'overdue'].includes(o.status)) continue;
+    if (o.variable && !s.occ[o.key]?.amount) out.push({ title: `${o.name}: check the amount`, text: `Varies. ${money(o.amount)} assumed for ${shortDate(o.date)}; enter the statement figure.`, occ: o.key });
+    else if (o.undated) out.push({ title: `${o.name}: which day?`, text: 'The collection day isn’t known, so it is held back from payday.', occ: o.key });
+  }
+  return out;
+}
+
+// The first payment the current account can no longer cover, if it is short.
+export function firstShort(safe) {
+  let left = safe.balance;
+  const ev = [...safe.outgoing.map(f => ({ ...f, d: -f.amount })), ...safe.incoming.map(f => ({ ...f, d: f.amount }))].sort((a, b) => a.date.localeCompare(b.date) || a.d - b.d);
+  for (const f of ev) { left += f.d; if (left < 0 && f.d < 0) return { name: f.label, date: f.date, short: -left }; }
+  return null;
 }
 
 function cushionSheet(ctx) {
@@ -212,14 +248,16 @@ function banner(kind, title, text, href, action) {
 
 export function occDir(s, o) {
   if (o.kind === 'income') return 'in';
-  const own = id => id && s.account[id] && s.account[id].tracked !== false;
+  // Paying a card is cash leaving, even though it lands on an account you track.
+  const own = id => id && s.account[id] && s.account[id].tracked !== false && s.account[id].type !== 'card';
   return o.kind === 'transfer' && own(o.from) && own(o.to) ? 'move' : 'out';
 }
 export function occRow(ctx, o) {
   const s = ctx.state;
   const dir = occDir(s, o);
   const acct = dir === 'move' ? `${s.account[o.from]?.name} → ${s.account[o.to]?.name}` : dir === 'in' ? `into ${s.account[o.to]?.name || ''}` : `from ${s.account[o.from]?.name || ''}`;
-  const status = o.status === 'planned' ? '' : chip(o.status) + ' ';
+  const soon = o.status === 'planned' && o.date <= addDays(ctx.today(), 3);
+  const status = soon ? chip('soon') + ' ' : o.status === 'planned' ? '' : chip(o.status) + ' ';
   return `<button class="row ${o.status === 'paid' ? 'done' : ''}" data-occ="${esc(o.key)}"><div class="tile">${icon(o.kind === 'income' ? 'income' : o.kind === 'transfer' ? 'transfer' : 'bill')}</div>
     <div class="main"><div class="title">${esc(o.name)}</div><div class="meta">${status}${esc(shortDate(o.date))}${o.undated ? ' · date not confirmed' : ''} · ${esc(acct)}</div></div>
     <div class="amount">${signed(o.part ? o.remaining : o.amount, occDir(s, o))}${o.variable ? '<small>varies</small>' : o.part ? '<small>still to pay</small>' : ''}</div></button>`;

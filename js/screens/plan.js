@@ -139,15 +139,16 @@ export function renderPeriod(ctx, key) {
 export function renderRules(ctx) {
   const s = ctx.state, today = ctx.today();
   const rules = Object.values(s.rule).filter(r => !r.deleted);
-  const active = rules.filter(r => !r.end || r.end >= today);
-  const ended = rules.filter(r => r.end && r.end < today);
+  const active = rules.filter(r => (!r.end || r.end >= today) && r.sched?.type !== 'once');
+  const oneOffs = rules.filter(r => r.sched?.type === 'once' && r.sched.date >= today);
+  const ended = rules.filter(r => (r.end && r.end < today) || (r.sched?.type === 'once' && r.sched.date < today));
   const groups = {};
   for (const r of active) {
     const acc = r.kind === 'income' ? 'Money in' : s.account[r.from]?.name || 'Other';
     (groups[acc] ??= []).push(r);
   }
   const row = r => `<button class="row" data-rule="${esc(r.id)}"><div class="tile">${icon(r.kind === 'income' ? 'income' : r.kind === 'transfer' ? 'transfer' : 'bill')}</div>
-    <div class="main"><div class="title">${esc(r.name)}</div><div class="meta">${esc(describeSchedule(r))}${r.to && r.kind !== 'income' ? ` · to ${esc(s.account[r.to]?.name || '')}` : ''}${r.variable ? ' · varies' : ''}</div></div>
+    <div class="main"><div class="title">${esc(r.name)}</div><div class="meta">${r.end && r.end < today ? chip('stopped') : r.paused ? chip('paused') : chip('scheduled')} ${esc(describeSchedule(r))}${r.to && r.kind !== 'income' ? ` · to ${esc(s.account[r.to]?.name || '')}` : ''}${r.variable ? ' · varies' : ''}</div></div>
     <div class="amount">${money(currentAmount(r, today))}</div></button>`;
   ctx.afterRender = el => {
     el.querySelectorAll('[data-rule]').forEach(b => b.onclick = () => openRuleSheet(ctx, b.dataset.rule));
@@ -156,6 +157,7 @@ export function renderRules(ctx) {
   return `<a class="back" href="#/plan">${icon('back')} Plan</a>
   <header class="topbar"><div><h1>Regular payments</h1><div class="sub">${active.length} active</div></div><button class="btn small primary" data-new>Add</button></header>
   ${Object.entries(groups).map(([g, list]) => `<section><h2>${esc(g)}</h2><div class="list">${list.sort((a, b) => a.name.localeCompare(b.name)).map(row).join('')}</div></section>`).join('')}
+  ${oneOffs.length ? `<section><h2>Planned one-off payments</h2><div class="list">${oneOffs.sort((a, b) => a.sched.date.localeCompare(b.sched.date)).map(row).join('')}</div></section>` : ''}
   ${ended.length ? `<section><h2>Ended</h2><div class="list">${ended.map(row).join('')}</div></section>` : ''}`;
 }
 function currentAmount(r, today) {

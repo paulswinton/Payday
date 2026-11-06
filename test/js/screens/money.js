@@ -2,7 +2,7 @@
 import { esc, money, icon, signed, chip } from '../ui.js';
 import { longDate, shortDate } from '../calendar.js';
 import { balances, displayBalance } from '../model.js';
-import { accountsList, openCheckSheet, openTxnSheet, txnLine, txnAmount, txnTitle, txnKindIcon, openAddSheet, openAccountSettings, confirmedBadge, confirmBalance, openOccurrenceSheet } from './forms.js';
+import { accountsList, openCheckSheet, openTxnSheet, txnLine, txnAmount, txnTitle, txnKindIcon, openAddSheet, openAccountSettings, confirmedBadge, confirmBalance, openOccurrenceSheet, openCardSheet, PRIORITIES } from './forms.js';
 import { allOccurrences, planPeriods } from '../plan.js';
 import { periodFor, addDays } from '../calendar.js';
 import { markPaid } from '../commands.js';
@@ -67,11 +67,18 @@ export function renderAccount(ctx, id) {
     .filter(o => (o.from === id || o.to === id) && ['overdue', 'planned', 'part'].includes(o.status)) : [];
   const resOut = reserved.filter(o => o.from === id).reduce((t, o) => t + (o.remaining || o.amount), 0);
   const need = a.target != null && a.tracked !== false ? Math.max(0, a.target - bal) : null;
+  const isCard = a.type === 'card';
+  // Goal: what is still needed and, with a deadline, how much per payday gets there.
+  const paydaysLeft = a.deadline ? planPeriods(s).filter(p => p.start > today && p.start <= a.deadline).length : null;
+  const perPayday = need && paydaysLeft ? Math.ceil(need / paydaysLeft) : null;
   ctx.afterRender = el => {
     el.querySelector('[data-check]')?.addEventListener('click', () => openCheckSheet(ctx, id));
     el.querySelector('[data-confirm]')?.addEventListener('click', () => confirmBalance(ctx, id));
     el.querySelector('[data-move]')?.addEventListener('click', () => openAddSheet(ctx, { kind: 'transfer', from: id }));
-    el.querySelector('[data-add]')?.addEventListener('click', () => openAddSheet(ctx, { kind: 'spend', from: id }));
+    el.querySelector('[data-add]')?.addEventListener('click', () => (isCard ? openCardSheet(ctx, id, 'spend') : openAddSheet(ctx, { kind: 'spend', from: id })));
+    el.querySelector('[data-repay]')?.addEventListener('click', () => openCardSheet(ctx, id, 'repayment'));
+    el.querySelector('[data-cardother]')?.addEventListener('click', () => openCardSheet(ctx, id, 'interest'));
+    el.querySelector('[data-track]')?.addEventListener('click', () => openAccountSettings(ctx, id));
     el.querySelectorAll('[data-occ]').forEach(b => b.onclick = () => openOccurrenceSheet(ctx, b.dataset.occ));
     el.querySelectorAll('[data-paid]').forEach(b => b.onclick = async e => {
       e.stopPropagation();
@@ -86,14 +93,20 @@ export function renderAccount(ctx, id) {
   <div class="feature"><div class="feature-head"><span class="muted small">${a.type === 'card' ? 'Owed now' : 'Balance now'}</span>${a.tracked === false ? '' : confirmedBadge(s, id, today)}</div>
     <div class="feature-big amount">${a.tracked === false ? 'Not tracked' : money(bal)}</div>
     <div class="muted small">Recorded balance · not a forecast${nextVal != null && nextVal !== bal ? `. Expected the day before next payday: <strong>${money(nextVal)}</strong>` : ''}</div>
-    ${need != null ? `<p class="small" style="margin-top:8px">${need ? `<strong>${money(need)}</strong> still needed to reach ${money(a.target)}.` : `Target of ${money(a.target)} reached.`}</p>` : ''}
-    ${a.tracked === false ? '' : `<div class="btngrid"><button class="btn" data-confirm>✓ Confirm</button><button class="btn" data-check>Correct</button>
-      <button class="btn" data-move>Move money</button><button class="btn" data-add>${a.type === 'card' ? 'Card spend' : 'Record spend'}</button></div>
+    ${need != null ? `<p class="small" style="margin-top:8px">${need ? `<strong>${money(need)}</strong> still needed to reach ${money(a.target)}${a.deadline ? ` by ${esc(longDate(a.deadline))}` : ''}.${perPayday ? ` That is <strong>${money(perPayday)}</strong> on each of the ${paydaysLeft} payday${paydaysLeft === 1 ? '' : 's'} left.` : a.deadline && !paydaysLeft ? ' No payday left before then.' : ''}` : `Target of ${money(a.target)} reached.`}${a.priority ? ` Priority: ${PRIORITIES[a.priority]}.` : ''}</p>` : ''}
+    ${a.notes ? `<p class="muted small">${esc(a.notes)}</p>` : ''}
+    ${isCard && (a.apr != null || a.minimum != null || a.dueDay) ? `<p class="muted small">${[a.apr != null ? `APR ${a.apr}%` : '', a.minimum != null ? `minimum ${money(a.minimum)}` : '', a.dueDay ? `due on the ${a.dueDay}${['th', 'st', 'nd', 'rd'][(a.dueDay % 100 - 20) % 10] || ['th', 'st', 'nd', 'rd'][a.dueDay % 100] || 'th'}` : ''].filter(Boolean).join(' · ')}</p>` : ''}
+    ${a.tracked === false ? (isCard ? `<p class="small">Payday doesn’t know what you owe on this card yet, so repayments can’t reduce the debt.</p><div class="btnrow"><button class="btn primary" data-track>Enter what I owe</button></div>` : '')
+      : isCard ? `<div class="btngrid"><button class="btn" data-confirm>✓ Confirm</button><button class="btn" data-check>Correct</button>
+      <button class="btn primary" data-repay>Repayment</button><button class="btn" data-add>Card spend</button></div>
+      <button class="linkrow" data-cardother style="border:0;background:none;padding:0">Interest, fee or refund ›</button>`
+      : `<div class="btngrid"><button class="btn" data-confirm>✓ Confirm</button><button class="btn" data-check>Correct</button>
+      <button class="btn" data-move>Move money</button><button class="btn" data-add>Record spend</button></div>
       <p class="muted small" style="margin-top:8px">Confirm when the bank shows the same figure. Correct when it doesn’t.</p>`}
   </div>
-  ${reserved.length ? `<section><h2>Reserved before payday ${resOut ? `<span class="muted small">${money(resOut)}</span>` : ''}</h2><div class="list">${reserved.map(o => `<div class="row static"><div class="main" data-occ="${esc(o.key)}" role="button" tabindex="0" style="cursor:pointer"><div class="title">${esc(o.name)}</div>
-      <div class="meta">${o.status === 'overdue' ? chip('overdue') + ' ' : ''}${esc(shortDate(o.date))}${o.variable ? ' · varies' : ''}</div></div>${signed(o.remaining || o.amount, o.to === id ? 'in' : 'out')}
-      <button class="donebtn" data-paid="${esc(o.key)}">${o.to === id ? (o.kind === 'income' ? 'Arrived' : 'In') : 'Paid'}</button></div>`).join('')}</div>
+  ${reserved.length ? `<section><h2>${isCard ? 'Repayments due before payday' : 'Reserved before payday'} ${resOut ? `<span class="muted small">${money(resOut)}</span>` : ''}</h2><div class="list">${reserved.map(o => `<div class="row static"><div class="main" data-occ="${esc(o.key)}" role="button" tabindex="0" style="cursor:pointer"><div class="title">${esc(o.name)}</div>
+      <div class="meta">${o.status === 'overdue' ? chip('overdue') + ' ' : ''}${esc(shortDate(o.date))}${o.variable ? ' · varies' : ''}</div></div>${isCard ? `<span class="amount">${money(o.remaining || o.amount)}</span>` : signed(o.remaining || o.amount, o.to === id ? 'in' : 'out')}
+      <button class="donebtn" data-paid="${esc(o.key)}">${o.kind === 'income' ? 'Arrived' : o.to === id && !isCard ? 'In' : 'Paid'}</button></div>`).join('')}</div>
       <p class="muted small">Paid records it from this account and updates every account it touches.</p></section>` : ''}
   ${a.tracked === false ? '' : `<details class="card fold" style="margin-top:10px"><summary>How this balance is made</summary><div class="lines">
     <div class="line"><span>Starting balance${since ? `<small>${esc(longDate(since))}</small>` : ''}</span><strong class="amount">${money(displayBalance(a, a.opening))}</strong></div>

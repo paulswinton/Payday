@@ -279,3 +279,7 @@ section, #verdict, .step { scroll-margin-top: calc(env(safe-area-inset-top) + 80
 .chipbtn { border: 0; border-radius: 8px; background: var(--surface-2); padding: 2px 8px; font-weight: 700; font-size: 14px; margin-left: 6px; cursor: pointer; }
 .btngrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
 .btngrid .btn { width: 100%; }
+.chip.scheduled { background: color-mix(in srgb, #4ea1ff 20%, transparent); color: #6fb4ff; }
+.chip.stopped { background: color-mix(in srgb, var(--red) 20%, transparent); color: var(--red); }
+.chip.soon { background: color-mix(in srgb, var(--orange) 22%, transparent); color: var(--orange); }
+:root[data-theme="light"] .chip.scheduled { color: #1d5fbf; }
