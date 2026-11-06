@@ -118,3 +118,18 @@ export function relTime(iso) {
   const d = Math.round(h / 24);
   return `${d} day${d === 1 ? '' : 's'} ago`;
 }
+
+// Money in is green with a plus; money out is red with a minus; a move between your
+// own accounts is plain. Words and signs carry the meaning, not colour alone.
+export function signed(pence, dir) {
+  if (pence === null || pence === undefined) return '—';
+  if (pence === 0) return `<span class="amount move">${formatPounds(0)}</span>`;
+  if (dir === 'in') return `<span class="amount in">+${formatPounds(Math.abs(pence))}</span>`;
+  if (dir === 'out') return `<span class="amount out">−${formatPounds(Math.abs(pence))}</span>`;
+  return `<span class="amount move">${formatPounds(pence)}</span>`;
+}
+const CHIP = { planned: ['due', 'Due'], due: ['due', 'Due'], paid: ['paid', 'Paid'], overdue: ['overdue', 'Overdue'], part: ['part', 'Part paid'], skipped: ['skipped', 'Skipped'], est: ['est', 'Estimate'], now: ['now', 'Now'] };
+export function chip(status, text) {
+  const [cls, label] = CHIP[status] || ['', status];
+  return `<span class="chip ${cls}">${esc(text || label)}</span>`;
+}

@@ -3,7 +3,7 @@
 // journal, so any change can be undone and any earlier version restored.
 // Balances are never stored: they are always calculated from transactions.
 
-export const KINDS = ['account', 'rule', 'occ', 'txn', 'check', 'scenario', 'setting'];
+export const KINDS = ['account', 'rule', 'occ', 'txn', 'check', 'scenario', 'setting', 'goal'];
 
 export function emptyState() {
   const s = { events: [], seq: 0 };
@@ -38,6 +38,7 @@ export function makeEvent(state, label, changes, extra = {}) {
 
 export function applyEvent(state, ev) {
   for (const o of ev.ops) {
+    state[o.kind] ??= {};
     if (o.op === 'put') state[o.kind][o.key] = clone(o.value);
     else delete state[o.kind][o.key];
   }

@@ -1,10 +1,13 @@
 // Today: what is safe to spend until payday, what needs doing, what just changed.
-import { esc, money, icon, sheet, relTime } from '../ui.js';
+import { esc, money, icon, sheet, relTime, signed, chip, toast } from '../ui.js';
 import { longDate, shortDate, addDays, daysBetween } from '../calendar.js';
 import { safeToSpend } from '../forecast.js';
 import { allOccurrences } from '../plan.js';
 import { canUndo, selfCheck, balances } from '../model.js';
-import { openOccurrenceSheet } from './forms.js';
+import { openOccurrenceSheet, field, errorBox, showError } from './forms.js';
+import { markPaid, setOccurrence } from '../commands.js';
+import { payRun } from '../payrun.js';
+import { currentRunKey } from './payday.js';
 
 export function renderToday(ctx) {
   const s = ctx.state, today = ctx.today();
@@ -35,8 +38,32 @@ export function renderToday(ctx) {
   const main = s.setting.mainAccount?.value || 'acc-current';
   const lastCheck = Object.values(s.check).filter(c => c.account === main).sort((a, b) => (b.at || b.date).localeCompare(a.at || a.date))[0];
 
+  const runKey = currentRunKey(s, today);
+  const run = runKey ? payRun(s, runKey, today) : null;
+  const payCard = run && (!run.complete || run.period.start === today) ? `<a class="paycard" href="#/payday/${run.period.key}" style="display:block;text-decoration:none;color:inherit;margin-top:12px">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px"><h2>${run.ready ? 'Payday' : `Payday ${daysBetween(today, run.period.start) === 1 ? 'tomorrow' : `in ${daysBetween(today, run.period.start)} days`}`}</h2><span class="muted small">${esc(longDate(run.period.start))}</span></div>
+    <div class="muted small">${run.complete ? 'Everything is done.' : run.ready ? `${run.total - run.todo} of ${run.total} done. Tap to see what to move where.` : `See what will need moving where, and what will be left.`}</div>
+    <div class="progress"><i style="width:${run.total ? Math.round(((run.total - run.todo) / run.total) * 100) : 100}%"></i></div></a>` : '';
+
   ctx.afterRender = el => {
     el.querySelector('[data-explain]')?.addEventListener('click', () => explain(ctx, safe, lastCheck));
+    el.querySelectorAll('[data-paid]').forEach(b => b.onclick = async () => {
+      const o = overdue.find(x => x.key === b.dataset.paid);
+      try { await ctx.dispatch(markPaid(ctx.state, o.key, { date: o.date, amount: o.remaining || o.amount }, today), { message: `${o.name}: marked as gone` }); } catch (err) { toast(err.message, { warn: true }); }
+    });
+    el.querySelectorAll('[data-nope]').forEach(b => b.onclick = async () => {
+      const o = overdue.find(x => x.key === b.dataset.nope);
+      try { await ctx.dispatch(setOccurrence(ctx.state, o.key, { skip: true }, `${o.name} on ${o.date} didn't happen`), { message: `${o.name}: marked as didn't happen` }); } catch (err) { toast(err.message, { warn: true }); }
+    });
+    el.querySelectorAll('[data-moved]').forEach(b => b.onclick = () => movedSheet(ctx, overdue.find(x => x.key === b.dataset.moved)));
+    el.querySelectorAll('[data-allgone]').forEach(b => b.onclick = async () => {
+      const list = overdue.filter(o => (o.from || o.to) === b.dataset.allgone);
+      try {
+        const evs = list.map(o => markPaid(ctx.state, o.key, { date: o.date, amount: o.remaining || o.amount }, today));
+        const ev = { ...evs[0], label: `${list.length} payments from ${s.account[b.dataset.allgone]?.name} marked as gone`, ops: evs.flatMap(e => e.ops) };
+        await ctx.dispatch(ev, { message: ev.label });
+      } catch (err) { toast(err.message, { warn: true }); }
+    });
     el.querySelectorAll('[data-occ]').forEach(b => b.onclick = () => openOccurrenceSheet(ctx, b.dataset.occ));
     el.querySelectorAll('[data-undo]').forEach(b => b.onclick = () => ctx.undo(s.events.find(e => e.id === b.dataset.undo)));
   };
@@ -50,10 +77,12 @@ export function renderToday(ctx) {
     <div class="foot">${heroFoot}</div>
     ${safe ? '<button type="button" data-explain>How this is worked out</button>' : ''}
   </div>
+  ${payCard}
   ${backupLine(ctx)}
+  ${overdue.length ? `<section><h2>Overdue ${chip('overdue', String(overdue.length))}</h2>
+    <p class="muted small">Past their date and not marked. Each is still held back from safe-to-spend until you say what happened.</p>
+    ${overdueGroups(ctx, overdue)}</section>` : ''}
   ${attention.length ? `<section><h2>Needs attention</h2>${attention.join('')}</section>` : ''}
-  ${overdue.length ? `<section><h2>Overdue <span class="tag overdue">${overdue.length}</span></h2><div class="list">${overdue.map(o => occRow(ctx, o)).join('')}</div>
-    <p class="muted small">Still held back from safe-to-spend until you mark each one paid or skip it.</p></section>` : ''}
   <section><h2>Next 7 days</h2>${soon.length ? `<div class="list">${soon.map(o => occRow(ctx, o)).join('')}</div>` : '<div class="card muted">Nothing planned in the next 7 days.</div>'}</section>
   <section><h2>Recent changes</h2>${recent.length ? `<div class="list">${recent.map(e => {
     const ok = canUndo(s, e).ok && !e.undoes;
@@ -67,13 +96,43 @@ function banner(kind, title, text, href, action) {
     ${href ? `<a class="btn small" href="${href}">${esc(action)}</a>` : ''}</div></div>`;
 }
 
+export function occDir(s, o) {
+  if (o.kind === 'income') return 'in';
+  const own = id => id && s.account[id] && s.account[id].tracked !== false;
+  return o.kind === 'transfer' && own(o.from) && own(o.to) ? 'move' : 'out';
+}
 export function occRow(ctx, o) {
   const s = ctx.state;
-  const acct = [s.account[o.from]?.name, s.account[o.to]?.name].filter(Boolean).join(' → ');
-  const sign = o.kind === 'income' ? money(o.amount, { sign: true }) : money(-o.amount);
-  return `<button class="row" data-occ="${esc(o.key)}"><div class="tile">${icon(o.kind === 'income' ? 'income' : o.kind === 'transfer' ? 'transfer' : 'bill')}</div>
-    <div class="main"><div class="title">${esc(o.name)}</div><div class="meta">${o.status === 'overdue' ? '<span class="tag overdue">Overdue</span> ' : ''}${esc(shortDate(o.date))}${o.undated ? ' (date to confirm)' : ''} · ${esc(acct)}</div></div>
-    <div class="amount ${o.kind === 'income' ? 'in' : ''}">${sign}${o.variable ? '<small>varies</small>' : ''}</div></button>`;
+  const dir = occDir(s, o);
+  const acct = dir === 'move' ? `${s.account[o.from]?.name} → ${s.account[o.to]?.name}` : dir === 'in' ? `into ${s.account[o.to]?.name || ''}` : `from ${s.account[o.from]?.name || ''}`;
+  const status = o.status === 'planned' ? '' : chip(o.status) + ' ';
+  return `<button class="row ${o.status === 'paid' ? 'done' : ''}" data-occ="${esc(o.key)}"><div class="tile">${icon(o.kind === 'income' ? 'income' : o.kind === 'transfer' ? 'transfer' : 'bill')}</div>
+    <div class="main"><div class="title">${esc(o.name)}</div><div class="meta">${status}${esc(shortDate(o.date))}${o.undated ? ' · date not confirmed' : ''} · ${esc(acct)}</div></div>
+    <div class="amount">${signed(o.part ? o.remaining : o.amount, occDir(s, o))}${o.variable ? '<small>varies</small>' : o.part ? '<small>still to pay</small>' : ''}</div></button>`;
+}
+// Overdue items grouped by the account they leave, so seven direct debits are one decision.
+function overdueGroups(ctx, overdue) {
+  const s = ctx.state, groups = {};
+  for (const o of overdue) (groups[o.from || o.to] ??= []).push(o);
+  return Object.entries(groups).map(([acc, list]) => list.length === 1 ? `<div class="list" style="margin-top:10px">${overdueRow(ctx, list[0])}</div>`
+    : `<div class="card" style="margin-top:10px"><div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline"><strong>${list.length} from ${esc(s.account[acc]?.name || 'an account')}</strong>${signed(list.reduce((t, o) => t + (o.remaining || o.amount), 0), 'out')}</div>
+      <p class="muted small">${esc(list.map(o => o.name).join(', '))}</p>
+      <div class="btnrow"><button class="btn small primary" data-allgone="${esc(acc)}">All gone</button><a class="btn small" href="#/account/${encodeURIComponent(acc)}">Check bank</a></div>
+      <details class="fold"><summary style="font-size:15px">One at a time</summary><div class="list">${list.map(o => overdueRow(ctx, o)).join('')}</div></details></div>`).join('');
+}
+function overdueRow(ctx, o) {
+  return `<div class="row static" style="flex-wrap:wrap"><div class="main" data-occ="${esc(o.key)}" role="button" tabindex="0" style="cursor:pointer"><div class="title">${esc(o.name)}</div>
+    <div class="meta">Was due ${esc(longDate(o.date))}</div></div><div class="amount">${signed(o.remaining || o.amount, occDir(ctx.state, o))}</div>
+    <div class="btnrow" style="width:100%;margin-top:4px"><button class="btn small primary" data-paid="${esc(o.key)}">${o.kind === 'income' ? 'Arrived' : 'Gone'}</button><button class="btn small" data-nope="${esc(o.key)}">Didn’t happen</button><button class="btn small" data-moved="${esc(o.key)}">New date</button></div></div>`;
+}
+function movedSheet(ctx, o) {
+  sheet(`${o.name}: new date`, `<form novalidate>${field('It will happen on', `<input type="date" name="date" value="${esc(ctx.today())}">`)}${errorBox()}
+    <div class="btnrow"><button class="btn primary block" type="submit">Save</button></div></form>`, el => {
+    el.querySelector('form').onsubmit = async e => {
+      e.preventDefault();
+      try { await ctx.dispatch(setOccurrence(ctx.state, o.key, { date: e.target.date.value }, `${o.name} moved to ${e.target.date.value}`)); } catch (err) { showError(el, err); }
+    };
+  });
 }
 
 function backupLine(ctx) {

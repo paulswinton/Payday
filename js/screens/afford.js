@@ -1,107 +1,224 @@
-// Afford: "Can I afford it?" and plan ideas you can try without changing anything.
-import { esc, money, icon, sheet, lineChart, confirmSheet, toast } from '../ui.js';
-import { parsePounds } from '../money.js';
+// Afford: "Can I afford it?", goals you are saving for, and plan ideas.
+// Nothing here changes your real plan until you choose to add it.
+import { esc, money, icon, sheet, lineChart, confirmSheet, toast, chip, signed } from '../ui.js';
+import { parsePounds, penceToInput } from '../money.js';
 import { longDate, shortDate, periodName, addDays, addMonths } from '../calendar.js';
-import { canAfford, runScenario, mainAccountId } from '../forecast.js';
-import { newId, makeEvent } from '../model.js';
+import { runScenario, mainAccountId } from '../forecast.js';
+import { newId, makeEvent, balances } from '../model.js';
 import { saveScenario, adoptScenario, saveRule } from '../commands.js';
 import { planPeriods } from '../plan.js';
+import { assess, comfortOf } from '../afford-engine.js';
+import { goalStatus, saveGoal, deleteGoal, addGoalSaving, paydaysBefore } from '../goals.js';
+import { roleOf } from '../roles.js';
 import { monthLabel } from './plan.js';
-import { accountOptions, field, errorBox, showError } from './forms.js';
+import { accountOptions, accountsList, field, errorBox, showError, openOccurrenceSheet } from './forms.js';
 
-let last = null; // last quick check, kept while you move around the app
+let last = null; // last check, kept while you move around the app
+let mode = 'once';
 
 export function renderAfford(ctx) {
   const s = ctx.state, today = ctx.today();
   const main = mainAccountId(s);
   const ideas = Object.values(s.scenario).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const goals = Object.values(s.goal || {}).map(g => goalStatus(s, g.id, today)).filter(Boolean);
   const defDate = addDays(today, 30);
   ctx.afterRender = el => {
+    el.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => { mode = b.dataset.mode; last = null; ctx.renderSameRoute(); });
     const f = el.querySelector('form[data-afford]');
     f.onsubmit = e => {
       e.preventDefault();
       try {
         const amount = parsePounds(f.amount.value);
-        if (amount === null || amount <= 0) throw new Error('Enter what it costs, for example 1500.');
+        if (amount === null || amount <= 0) throw new Error(mode === 'monthly' ? 'Enter the monthly cost, for example 35.00.' : 'Enter what it costs, for example 1500.');
         if (!f.date.value || f.date.value < today) throw new Error('Choose a date from today onwards.');
         const what = f.what.value.trim() || 'This';
-        last = { what, input: { amount, date: f.date.value, from: f.from.value }, result: canAfford(ctx.state, { today, amount, date: f.date.value, from: f.from.value }) };
+        const input = { what, amount, date: f.date.value, from: f.from.value, monthly: mode === 'monthly' };
+        last = { what, input, result: assess(ctx.state, input, today) };
         ctx.renderSameRoute();
-        document.getElementById('verdict')?.scrollIntoView({ block: 'start' });
+        document.getElementById('verdict')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
       } catch (err) { showError(el, err); }
     };
-    el.querySelector('[data-try]')?.addEventListener('click', () => tryPlan(ctx));
     el.querySelector('[data-add-plan]')?.addEventListener('click', async () => {
       const { what, input } = last;
-      await ctx.dispatch(saveRule(ctx.state, { name: what, kind: 'bill', amount: input.amount, from: input.from, to: null, sched: { type: 'once', date: input.date }, start: input.date, end: null, versions: [], shift: false }), { message: `${what} added to your plan` });
+      const rule = input.monthly
+        ? { name: what, kind: 'bill', amount: input.amount, from: input.from, to: null, sched: { type: 'monthly', day: Number(input.date.slice(8)) }, start: input.date, end: null, versions: [], shift: true }
+        : { name: what, kind: 'bill', amount: input.amount, from: input.from, to: null, sched: { type: 'once', date: input.date }, start: input.date, end: null, versions: [], shift: false };
+      await ctx.dispatch(saveRule(ctx.state, rule), { message: `${what} added to your plan` });
+      last = null;
     });
+    el.querySelector('[data-make-goal]')?.addEventListener('click', () => openGoalSheet(ctx, null, { name: last.what, instalments: [{ label: 'Payment', amount: last.input.amount, date: last.input.date }], pot: roleOf(ctx.state, ctx.state.account[last.input.from]) === 'savings' ? last.input.from : '' }));
     el.querySelector('[data-save-idea]')?.addEventListener('click', () => saveAsIdea(ctx));
+    el.querySelectorAll('[data-try-date]').forEach(b => b.onclick = () => { last.input.date = b.dataset.tryDate; last.result = assess(ctx.state, last.input, today); ctx.renderSameRoute(); });
+    el.querySelectorAll('[data-try-amount]').forEach(b => b.onclick = () => { last.input.amount = Number(b.dataset.tryAmount); last.result = assess(ctx.state, last.input, today); ctx.renderSameRoute(); });
     el.querySelectorAll('[data-idea]').forEach(b => b.onclick = () => openIdea(ctx, b.dataset.idea));
     el.querySelector('[data-new-idea]').onclick = () => editIdeaName(ctx, null);
+    el.querySelector('[data-new-goal]').onclick = () => openGoalSheet(ctx, null);
   };
   return `
-  <header class="topbar"><div><h1>Afford</h1><div class="sub">Try it here first. Nothing changes until you choose.</div></div></header>
+  <header class="topbar"><div><h1>Afford</h1><div class="sub">Try it first. Nothing changes until you choose.</div></div></header>
   <section class="card"><h2>Can I afford it?</h2>
+    <div class="seg" role="group" aria-label="Kind of cost"><button type="button" data-mode="once" aria-pressed="${mode === 'once'}">One-off</button><button type="button" data-mode="monthly" aria-pressed="${mode === 'monthly'}">Monthly cost</button></div>
     <form novalidate data-afford>
-      ${field('What is it?', `<input name="what" maxlength="60" placeholder="e.g. Holiday in Spain" value="${esc(last?.what || '')}">`)}
-      <div class="grid2">${field('Cost (£)', `<input name="amount" inputmode="decimal" placeholder="0.00" value="${last ? (last.input.amount / 100).toFixed(2) : ''}">`)}
-      ${field('When', `<input type="date" name="date" min="${today}" value="${esc(last?.input.date || defDate)}">`)}</div>
-      ${field('Paid from', `<select name="from">${accountOptions(s, last?.input.from || main)}</select>`)}
+      ${field('What is it?', `<input name="what" maxlength="60" placeholder="${mode === 'monthly' ? 'e.g. Gym membership' : 'e.g. New laptop'}" value="${esc(last?.what || '')}">`)}
+      <div class="grid2">${field(mode === 'monthly' ? 'Each month (£)' : 'Cost (£)', `<input name="amount" inputmode="decimal" placeholder="0.00" value="${last ? (last.input.amount / 100).toFixed(2) : ''}">`)}
+      ${field(mode === 'monthly' ? 'First payment' : 'When', `<input type="date" name="date" min="${today}" value="${esc(last?.input.date || defDate)}">`)}</div>
+      ${field('Paid from', `<select name="from">${accountOptions(s, last?.input.from || main, { types: ['bank', 'pot'] })}</select>`)}
       ${errorBox()}
       <button class="btn primary block" type="submit" style="margin-top:14px">Check</button>
     </form></section>
   ${last ? verdict(ctx) : ''}
+  <section><h2>Goals</h2>
+    <p class="muted small">Something you are saving for, paid in one or more instalments. Payday checks every payment date, not just the total.</p>
+    ${goals.length ? `<div class="list">${goals.map(g => goalRow(ctx, g)).join('')}</div>` : ''}
+    <button class="btn block" data-new-goal style="margin-top:10px">New goal</button></section>
   <section><h2>Plan ideas</h2>
-    <p class="muted small">Build a "what if" (a holiday, saving each payday, a pay rise, cancelling a bill) and see the effect on every payday to 2031.</p>
+    <p class="muted small">Build a "what if" (a pay rise, cancelling a bill, saving each payday) and see the effect on every payday.</p>
     ${ideas.length ? `<div class="list">${ideas.map(i => `<button class="row" data-idea="${esc(i.id)}"><div class="tile">${icon('afford')}</div><div class="main"><div class="title">${esc(i.name)}</div><div class="meta">${(i.items || []).length + (i.changes || []).length} change${(i.items || []).length + (i.changes || []).length === 1 ? '' : 's'}</div></div></button>`).join('')}</div>` : ''}
     <button class="btn block" data-new-idea style="margin-top:10px">New plan idea</button></section>`;
 }
 
-function verdict(ctx) {
-  const s = ctx.state, r = last.result, a = s.account[r.from];
-  const what = esc(last.what);
-  const thresholdText = r.threshold ? `your ${money(r.threshold)} cushion` : '£0';
-  let cls, head, text;
-  if (r.verdict === 'yes') {
-    cls = 'yes'; head = 'Yes, it fits';
-    text = `${what} for ${money(r.amount)} on ${esc(longDate(r.date))}. Afterwards, the lowest ${esc(a.name)} gets in the following 12 months is ${money(r.lowWith.value)} (${esc(shortDate(r.lowWith.date))}), which is ${money(r.margin)} above ${thresholdText}.`;
-  } else if (r.verdict === 'no') {
-    cls = 'no'; head = 'Not as things stand';
-    text = `${esc(a.name)} would go ${money(r.short)} below ${thresholdText}, lowest on ${esc(longDate(r.lowWith.date))}.` +
-      (r.perPayday ? ` Put aside <strong>${money(r.perPayday)}</strong> on each of the ${r.paydays} paydays before then and it fits.` : ' There is no payday before then to save from.');
-  } else {
-    cls = 'short'; head = 'Your plan is already short';
-    text = `Even without ${what}, ${esc(a.name)} drops below ${thresholdText} on ${esc(longDate(r.lowBase.date))} (lowest ${money(r.lowBase.value)}). Sort that out first: see the Plan tab.`;
-  }
-  return `<section id="verdict"><div class="verdict ${cls}" role="status"><strong>${head}</strong><p>${text}</p></div>
-    <div class="btnrow">${r.verdict === 'no' && r.perPayday ? '<button class="btn primary" data-try>Try the saving plan</button>' : ''}
-    <button class="btn" data-save-idea>Save as a plan idea</button><button class="btn" data-add-plan>Add to my plan</button></div>
-    <p class="muted small">Checked from ${esc(longDate(r.date))} to ${esc(longDate(r.windowEnd))} using your regular payments, expected salary${s.setting.everydaySpend?.value != null ? ` and ${money(s.setting.everydaySpend.value)} everyday spending each payday` : ''}.</p>
-    ${s.setting.everydaySpend?.value == null ? '<div class="banner"><span class="dot">!</span><div><strong>Everyday spending is not set</strong><p class="small muted">Until it is, the forecast assumes you spend nothing day to day, so this answer is too optimistic.</p><a class="btn small" href="#/settings">Set it</a></div></div>' : ''}</section>`;
+function goalRow(ctx, g) {
+  const saved = Math.max(0, g.paid + Math.max(0, g.potNow));
+  const pct = g.total ? Math.min(100, Math.round((saved / g.total) * 100)) : 0;
+  const status = !g.open.length ? chip('paid', 'Paid') : g.onTrack ? chip('paid', 'On track') : chip('overdue', 'Short');
+  return `<a class="row" href="#/goal/${encodeURIComponent(g.goal.id)}" style="flex-wrap:wrap"><div class="main"><div class="title">${esc(g.goal.name)} ${status}</div>
+    <div class="meta">${money(g.total)} · ${g.open.length ? `next ${money(g.open[0].remaining || g.open[0].amount)} on ${esc(shortDate(g.open[0].date))}` : 'all paid'}${g.perPayday ? ` · needs ${money(g.perPayday)} more each payday` : ''}</div>
+    <div class="goalbar" aria-hidden="true"><i style="width:${pct}%"></i></div></div></a>`;
 }
 
-function ideaFromLast(ctx, withSaving) {
-  const s = ctx.state, { what, input, result } = last, today = ctx.today();
-  const main = mainAccountId(s);
-  const items = [{ id: newId('it'), type: 'once', name: what, amount: input.amount, from: input.from, date: input.date }];
-  if (withSaving && result.perPayday) {
-    const firstPay = planPeriods(s).find(p => p.start > today);
-    const lastPay = [...planPeriods(s)].reverse().find(p => p.start <= input.date);
-    // Saving means spending less day to day; if it comes from a pot, move it there each payday.
-    items.push({ id: newId('it'), type: 'everyday', name: `Spend less for ${what}`, amount: result.perPayday, start: firstPay.start, end: lastPay.start });
-    if (input.from !== main) items.push({ id: newId('it'), type: 'payday', name: `Save for ${what}`, amount: result.perPayday, from: main, to: input.from, start: firstPay.start, end: lastPay.start });
+const HEAD = { yes: 'Yes, it fits', tight: 'It fits, but it’s tight', no: 'Not as things stand', 'plan-short': 'Your plan is already short', unknown: 'Can’t tell yet' };
+function verdict(ctx) {
+  const s = ctx.state, r = last.result, a = s.account[r.input.from];
+  const what = esc(last.what);
+  const when = r.input.monthly ? `${money(r.input.amount)} a month from ${esc(longDate(r.input.date))}` : `${money(r.input.amount)} on ${esc(longDate(r.input.date))}`;
+  const thr = r.threshold ? `your ${money(r.threshold)} ${a.id === mainAccountId(s) ? 'cushion' : 'minimum'}` : '£0';
+  let body = '';
+  if (r.verdict === 'yes' || r.verdict === 'tight' || r.verdict === 'unknown') {
+    body = `<p class="headline">${what}: ${when}.</p>${r.payerLow ? `<div class="figure">${money(r.payerLow.value)}</div>
+      <p>The lowest ${esc(a.name)} gets in the following 12 months (${esc(shortDate(r.payerLow.date))}). That is ${money(r.margin)} above ${thr}.</p>` : ''}
+      ${r.verdict === 'tight' ? `<p>Less than ${money(comfortOf(s))} to spare. One unexpected bill could tip it.</p>` : ''}
+      ${r.verdict === 'unknown' ? `<p><strong>${esc(r.unknown)}</strong></p>` : ''}`;
+  } else {
+    const ps = r.problems.filter(p => r.verdict === 'plan-short' ? p.already : !p.already);
+    body = `<p class="headline">${what}: ${when}.</p>${ps.map(p => `<p>${esc(p.name)} would be <strong>${money(p.short)} short</strong> on ${esc(longDate(p.date))}${p.threshold ? ` (below ${money(p.threshold)})` : ''}.</p>`).join('')}
+      ${r.verdict === 'plan-short' ? '<p>That is before this purchase. Look at the Plan tab first.</p>' : ''}`;
   }
-  return { id: newId('sc'), name: what, items, changes: [] };
+  const fx = r.fixes;
+  const fixes = fx ? `<div class="card" style="margin-top:10px"><h3>What would make it fit</h3>
+    ${fx.save ? `<div class="fix"><span class="n">1</span><div>${fx.save.into ? `Save <strong>${money(fx.save.perPayday)}</strong> more into ${esc(fx.save.into)} on each of the next ${fx.save.paydays} paydays. ${fx.save.ok ? 'Your current account can carry that.' : 'Your current account couldn’t carry that on its own, so something else would need to give.'}` : `Find <strong>${money(fx.save.perPayday)}</strong> each payday for the next ${fx.save.paydays} paydays, for example by reducing a savings transfer for a while.`}</div></div>` : ''}
+    ${fx.later ? `<div class="fix"><span class="n">${fx.save ? 2 : 1}</span><div>Wait until <strong>${esc(longDate(fx.later.date))}</strong> (${fx.later.months} month${fx.later.months === 1 ? '' : 's'} later). <button class="btn small" data-try-date="${fx.later.date}">Check that date</button></div></div>` : ''}
+    ${fx.maxAmount > 0 ? `<div class="fix"><span class="n">${(fx.save ? 1 : 0) + (fx.later ? 1 : 0) + 1}</span><div>Spend up to <strong>${money(fx.maxAmount)}</strong> on the date you chose. <button class="btn small" data-try-amount="${fx.maxAmount}">Check that amount</button></div></div>` : ''}
+  </div>` : '';
+  return `<section id="verdict"><div class="verdict ${r.verdict === 'plan-short' ? 'short' : r.verdict}" role="status"><strong>${HEAD[r.verdict]}</strong>${body}</div>
+    ${fixes}
+    ${r.caveats.length ? `<div class="card" style="margin-top:10px"><h3>This answer assumes</h3><ul class="caveats">${r.caveats.map(c => `<li>${esc(c)}</li>`).join('')}
+      <li>Your regular payments and expected salary happen as planned. Overtime is never counted until it arrives.</li></ul></div>` : ''}
+    <div class="btnrow">${r.input.monthly ? '' : '<button class="btn" data-make-goal>Make it a goal</button>'}<button class="btn" data-add-plan>Add to plan</button><button class="btn" data-save-idea>Save idea</button></div></section>`;
 }
-async function tryPlan(ctx) {
-  const idea = ideaFromLast(ctx, true);
-  await ctx.dispatch(saveScenario(ctx.state, idea), { message: `Plan idea saved: ${idea.name}` });
-  openIdea(ctx, idea.id);
+
+function ideaFromLast(ctx) {
+  const { what, input } = last;
+  const item = input.monthly ? { id: newId('it'), type: 'monthly', name: what, amount: input.amount, from: input.from, day: Number(input.date.slice(8)), start: input.date }
+    : { id: newId('it'), type: 'once', name: what, amount: input.amount, from: input.from, date: input.date };
+  return { id: newId('sc'), name: what, items: [item], changes: [] };
 }
 async function saveAsIdea(ctx) {
-  const idea = ideaFromLast(ctx, false);
+  const idea = ideaFromLast(ctx);
   await ctx.dispatch(saveScenario(ctx.state, idea), { message: `Plan idea saved: ${idea.name}` });
   openIdea(ctx, idea.id);
+}
+
+// ---- Goals ----------------------------------------------------------------------
+export function renderGoal(ctx, id) {
+  const s = ctx.state, today = ctx.today();
+  const g = goalStatus(s, id, today);
+  if (!g) return `<a class="back" href="#/afford">${icon('back')} Afford</a><div class="empty">That goal no longer exists.</div>`;
+  const pot = s.account[g.goal.pot];
+  const into = Object.values(s.rule).filter(r => !r.deleted && r.to === pot?.id && r.kind === 'transfer' && (!r.end || r.end >= today));
+  const lastPay = g.paydays ? paydaysBefore(s, today, g.last) : [];
+  ctx.afterRender = el => {
+    el.querySelectorAll('[data-occ]').forEach(b => b.onclick = () => openOccurrenceSheet(ctx, b.dataset.occ));
+    el.querySelector('[data-edit]').onclick = () => openGoalSheet(ctx, id);
+    el.querySelector('[data-del]').onclick = async () => {
+      if (!(await confirmSheet('Delete this goal?', 'Its planned payments are removed from your plan. You can undo this.', 'Delete', true))) return;
+      await ctx.dispatch(deleteGoal(ctx.state, id)); ctx.go('#/afford');
+    };
+    el.querySelector('[data-add-saving]')?.addEventListener('click', async () => {
+      await ctx.dispatch(addGoalSaving(ctx.state, id, g.perPayday, lastPay[0].start, lastPay[lastPay.length - 1].start), { message: `Added ${money(g.perPayday)} each payday for ${g.goal.name}` });
+    });
+  };
+  const saved = Math.max(0, g.paid + Math.max(0, g.potNow));
+  const pct = g.total ? Math.min(100, Math.round((saved / g.total) * 100)) : 0;
+  return `<a class="back" href="#/afford">${icon('back')} Afford</a>
+  <header class="topbar"><div><h1>${esc(g.goal.name)}</h1><div class="sub">Saved in ${esc(pot?.name || 'a pot')}</div></div><button class="btn small" data-edit>Edit</button></header>
+  <div class="card"><div class="kpi"><div class="stat"><span>Total</span><strong class="amount">${money(g.total)}</strong></div><div class="stat"><span>In ${esc(pot?.name || 'pot')} now</span><strong class="amount">${money(g.potNow)}</strong></div></div>
+    <div class="goalbar"><i style="width:${pct}%"></i></div><p class="muted small">${money(g.paid)} paid so far${g.open.length ? ` · ${money(g.total - g.paid)} still to pay` : ''}.</p></div>
+  ${g.open.length ? `<div class="verdict ${g.onTrack ? 'yes' : 'no'}" style="margin-top:10px"><strong>${g.onTrack ? 'On track' : 'Not on track yet'}</strong>
+    ${g.onTrack ? `<p>With the money already going into ${esc(pot?.name || 'the pot')}, every payment is covered on its date.</p>`
+      : g.impossible ? `<p>${esc(pot?.name)} will be ${money(g.impossible.short)} short on ${esc(longDate(g.impossible.date))}, and there is no payday before then to save from. Move money in now, or change the date.</p>`
+      : `<div class="figure">${money(g.perPayday)}</div><p>more each payday, for ${g.paydays} payday${g.paydays === 1 ? '' : 's'}, covers every payment on its date (biggest gap: ${money(g.worst.short)} on ${esc(longDate(g.worst.date))}).</p>
+        <p>${g.carry?.ok ? `Your current account can carry that: its lowest would be ${money(g.carry.low.value)}.` : `Your current account can’t carry that on its own: it would drop to ${money(g.carry?.low?.value)} on ${esc(longDate(g.carry?.low?.date))}. Look at reducing another saving for a while, a later date, or a smaller budget.`}</p>`}</div>
+    ${!g.onTrack && !g.impossible && lastPay.length ? `<div class="btnrow"><button class="btn primary" data-add-saving>Add ${money(g.perPayday)} each payday to my plan</button></div>` : ''}` : ''}
+  <section><h2>Payments</h2><div class="list">${g.instalments.map(o => {
+    const pi = (g.perInstalment || []).find(x => x.key === o.key);
+    return `<button class="row" data-occ="${esc(o.key)}"><div class="main"><div class="title">${esc(o.label || o.name.replace(g.goal.name + ': ', ''))}</div>
+      <div class="meta">${chip(o.status)} ${esc(longDate(o.date))}${pi && !pi.covered ? ` · pot short by ${money(-pi.potAfter)} that day` : pi ? ' · covered' : ''}</div></div>
+      <div class="amount">${money(o.amount)}${o.part ? `<small>${money(o.remaining)} left</small>` : ''}</div></button>`;
+  }).join('')}</div><p class="muted small">Tap a payment to mark it paid, in full or in part, or to move its date.</p></section>
+  <section><h2>Going into ${esc(pot?.name || 'the pot')}</h2>${into.length ? `<div class="list">${into.map(r => `<div class="row static"><div class="main"><div class="title">${esc(r.name)}</div><div class="meta">${r.sched.type === 'payday' ? 'Each payday' : 'Regular'}${r.end ? ` until ${esc(shortDate(r.end))}` : ''}</div></div>${signed(r.amount, 'in')}</div>`).join('')}</div>` : '<div class="card muted">Nothing goes in regularly.</div>'}</section>
+  <div class="btnrow"><button class="btn danger" data-del>Delete goal</button></div>`;
+}
+
+export function openGoalSheet(ctx, id, preset = null) {
+  const s = ctx.state, today = ctx.today();
+  const g = id ? s.goal[id] : null;
+  const current = g ? Object.values(s.rule).filter(r => r.goal === id && !r.deleted && r.kind !== 'transfer').sort((a, b) => a.sched.date.localeCompare(b.sched.date))
+    .map(r => ({ ruleId: r.id, label: r.label || r.name, amount: r.amount, date: r.sched.date })) : (preset?.instalments || [{ label: 'Deposit', amount: null, date: addDays(today, 30) }]);
+  let rows = current.map(r => ({ ...r, key: newId('row') }));
+  const oneOffs = Object.values(s.rule).filter(r => !r.deleted && !r.goal && r.sched?.type === 'once' && r.sched.date >= today && r.kind === 'bill');
+  const adopt = new Set();
+  const pots = accountsList(s, { types: ['pot', 'bank'] }).filter(a => a.tracked !== false);
+  const draw = () => `<form novalidate>
+    ${field('Goal', `<input name="name" maxlength="60" value="${esc(g?.name || preset?.name || '')}" placeholder="e.g. Lakes holiday">`)}
+    ${field('Saved in', `<select name="pot"><option value="">Choose…</option>${pots.map(a => `<option value="${esc(a.id)}" ${(g?.pot || preset?.pot) === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>`)}
+    <h3 style="margin-top:18px">Payments</h3><p class="muted small">Each deposit or instalment, with the date it is due.</p>
+    <div data-rows>${rows.map(r => `<div class="card" style="padding:10px 12px;margin-top:8px" data-row="${r.key}"><div class="grid2">${field('What', `<input name="label" maxlength="40" value="${esc(r.label || '')}">`)}${field('Amount (£)', `<input name="amount" inputmode="decimal" value="${r.amount ? esc(penceToInput(r.amount)) : ''}">`)}</div>
+      <div class="grid2">${field('Due', `<input type="date" name="date" value="${esc(r.date || '')}">`)}<button type="button" class="btn small" data-remove="${r.key}" style="align-self:end">Remove</button></div></div>`).join('')}</div>
+    <button type="button" class="btn small" data-addrow style="margin-top:10px">Add a payment</button>
+    ${oneOffs.length ? `<h3 style="margin-top:18px">Already in your plan?</h3><p class="muted small">If one of these is part of this goal, mark it so it isn’t counted twice.</p>
+      ${oneOffs.map(r => `<div class="toggle"><span>${esc(r.name)} · ${money(r.amount)} · ${esc(shortDate(r.sched.date))}</span><button type="button" data-adopt="${esc(r.id)}" aria-pressed="false">Part of it</button></div>`).join('')}` : ''}
+    ${errorBox()}<div class="btnrow"><button class="btn primary block" type="submit">${g ? 'Save goal' : 'Add goal'}</button></div></form>`;
+  const read = el => rows.map(r => {
+    const box = el.querySelector(`[data-row="${r.key}"]`);
+    return { ...r, label: box.querySelector('[name=label]').value.trim(), amount: parsePounds(box.querySelector('[name=amount]').value), date: box.querySelector('[name=date]').value };
+  });
+  const mount = el => {
+    const f = el.querySelector('form');
+    el.querySelector('[data-addrow]').onclick = () => { rows = read(el); rows.push({ key: newId('row'), label: rows.length ? 'Balance' : 'Payment', amount: null, date: '' }); keep(el); };
+    el.querySelectorAll('[data-remove]').forEach(b => b.onclick = () => { rows = read(el).filter(r => r.key !== b.dataset.remove); keep(el); });
+    el.querySelectorAll('[data-adopt]').forEach(b => b.onclick = () => {
+      const on = b.getAttribute('aria-pressed') !== 'true'; b.setAttribute('aria-pressed', String(on));
+      if (on) adopt.add(b.dataset.adopt); else adopt.delete(b.dataset.adopt);
+    });
+    f.onsubmit = async e => {
+      e.preventDefault();
+      try {
+        const inst = read(el);
+        if (inst.some(r => r.amount === null || r.amount <= 0)) throw new Error('Every payment needs an amount.');
+        const ev = saveGoal(ctx.state, { id, name: f.name.value, pot: f.pot.value, instalments: inst.map(r => ({ ruleId: r.ruleId, label: r.label, amount: r.amount, date: r.date })), adopt: [...adopt] });
+        await ctx.dispatch(ev, { message: `${f.name.value.trim()} saved` });
+        ctx.go(`#/goal/${encodeURIComponent(ev.ops.find(o => o.kind === 'goal').key)}`);
+      } catch (err) { showError(el, err); }
+    };
+  };
+  const keep = el => {
+    const f = el.querySelector('form');
+    const name = f.name.value, pot = f.pot.value;
+    el.querySelector('.sheet-body').innerHTML = draw();
+    const f2 = el.querySelector('form'); f2.name.value = name; f2.pot.value = pot;
+    mount(el);
+  };
+  sheet(g ? 'Edit goal' : 'New goal', draw(), el => mount(el));
 }
 
 function editIdeaName(ctx, id) {

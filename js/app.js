@@ -6,13 +6,14 @@ import { upload } from './backup.js';
 import { toast, esc, closeSheet } from './ui.js';
 import { renderToday } from './screens/today.js';
 import { renderPlan, renderPeriod, renderRules } from './screens/plan.js';
-import { renderAfford } from './screens/afford.js';
+import { renderAfford, renderGoal } from './screens/afford.js';
+import { renderPayday } from './screens/payday.js';
 import { renderMoney, renderAccount, renderHistory } from './screens/money.js';
 import { renderSettings, renderWelcome } from './screens/settings.js';
 import { openAddSheet } from './screens/forms.js';
 import { applyTheme } from './screens/settings.js';
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.1.0';
 
 const ctx = {
   state: emptyState(), store: null, meta: {}, key: null,
@@ -103,6 +104,9 @@ const routes = [
   [/^#\/period\/([\d-]+)$/, renderPeriod, 'plan'],
   [/^#\/rules$/, renderRules, 'plan'],
   [/^#\/afford$/, renderAfford, 'afford'],
+  [/^#\/goal\/(.+)$/, renderGoal, 'afford'],
+  [/^#\/payday$/, renderPayday, 'today'],
+  [/^#\/payday\/([\d-]+)$/, renderPayday, 'today'],
   [/^#\/money$/, renderMoney, 'money'],
   [/^#\/account\/(.+)$/, renderAccount, 'money'],
   [/^#\/history$/, renderHistory, 'money'],

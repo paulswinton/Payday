@@ -23,7 +23,7 @@ export function validateTxn(state, t, today) {
 export function addTxn(state, input, today) {
   const t = { id: newId('tx'), created: new Date().toISOString(), note: '', occ: null, ...input, desc: String(input.desc || '').trim().slice(0, 120) };
   validateTxn(state, t, today);
-  if (t.occ && Object.values(state.txn).some(x => x.occ === t.occ)) throw new Error('This planned payment is already marked as paid.');
+  if (t.occ && Object.values(state.txn).some(x => x.occ === t.occ) && !state.rule[t.occ.split('|')[0]]?.goal) throw new Error('This planned payment is already marked as paid.');
   return makeEvent(state, `${KIND_LABEL[t.kind] || 'Transaction'}: ${t.desc} ${formatPounds(t.amount)}`, [{ kind: 'txn', key: t.id, value: t }]);
 }
 
@@ -96,7 +96,7 @@ export function saveAccount(state, account) {
 }
 
 // Record what the bank shows. A difference can be recorded as a dated correction.
-export function checkBalance(state, accountId, bankValue, date, { correct = false } = {}) {
+export function checkBalance(state, accountId, bankValue, date, { correct = false, reason = '' } = {}) {
   const a = state.account[accountId];
   if (!a) throw new Error('Unknown account.');
   const appValue = balances(state, date)[accountId];
@@ -104,7 +104,7 @@ export function checkBalance(state, accountId, bankValue, date, { correct = fals
   const changes = [{ kind: 'check', key: newId('chk'), value: { account: accountId, date, bank: bankValue, app: appValue, at: new Date().toISOString() } }];
   if (correct && diff !== 0) {
     const t = { id: newId('tx'), created: new Date().toISOString(), kind: 'adjust', amount: Math.abs(diff), date,
-      from: diff < 0 ? accountId : null, to: diff > 0 ? accountId : null, desc: `Bank correction: ${a.name}`, note: 'Difference found when checking against the bank', occ: null };
+      from: diff < 0 ? accountId : null, to: diff > 0 ? accountId : null, desc: reason ? `Bank correction: ${reason}` : `Bank correction: ${a.name}`, note: 'Difference found when checking against the bank', reason, occ: null };
     changes.push({ kind: 'txn', key: t.id, value: t });
   }
   return { event: makeEvent(state, `Checked ${a.name} against bank`, changes), diff };

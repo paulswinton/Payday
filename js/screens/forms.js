@@ -1,10 +1,12 @@
 // Sheets for adding and changing things. Every save is undoable.
-import { esc, money, sheet, icon, confirmSheet, toast } from '../ui.js';
+import { esc, money, sheet, icon, confirmSheet, toast, signed, chip } from '../ui.js';
 import { parsePounds, penceToInput } from '../money.js';
-import { longDate, addDays } from '../calendar.js';
+import { longDate, shortDate, addDays } from '../calendar.js';
 import { history, balances, displayBalance } from '../model.js';
 import { addTxn, editTxn, deleteTxn, restoreTxnVersion, markPaid, setOccurrence, saveRule, changeRuleFrom, endRule, checkBalance } from '../commands.js';
-import { occurrenceByKey, describeSchedule, settledIndex } from '../plan.js';
+import { occurrenceByKey, describeSchedule, settledIndex, allOccurrences } from '../plan.js';
+import { ROLES, CATEGORIES, roleOf, categoryOf } from '../roles.js';
+import { saveAccount } from '../commands.js';
 
 const TYPE_ORDER = { bank: 0, pot: 1, card: 2 };
 export function accountsList(state, { types = ['bank', 'pot', 'card'], includeArchived = false } = {}) {
@@ -33,12 +35,27 @@ export function txnLine(state, t) {
   return accName(state, t.from || t.to);
 }
 export function txnAmountClass(state, t) {
-  if (t.from && t.to) return 'out';
+  if (t.from && t.to) return 'move';
   return t.to ? 'in' : 'out';
 }
 export function txnAmountText(t) {
   if (t.from && t.to) return money(t.amount);
   return t.to ? money(t.amount, { sign: true }) : money(-t.amount);
+}
+// Direction from one account's point of view: into it is money in, out of it is money out.
+export function txnDir(state, t, accountId = null) {
+  if (accountId) return t.to === accountId ? 'in' : 'out';
+  if (t.from && t.to) {
+    const own = id => state.account[id] && state.account[id].tracked !== false;
+    return own(t.from) && own(t.to) ? 'move' : 'out';
+  }
+  return t.to ? 'in' : 'out';
+}
+export function txnAmount(state, t, accountId = null) { return signed(t.amount, txnDir(state, t, accountId)); }
+export function txnTitle(state, t, accountId = null) {
+  if (t.kind === 'adjust') return t.desc.startsWith('Bank correction') ? 'Bank correction' : `Correction: ${t.desc}`;
+  if (accountId && t.from && t.to && /^transfer\b/i.test(t.desc || 'transfer')) return t.to === accountId ? `From ${accName(state, t.from)}` : `To ${accName(state, t.to)}`;
+  return t.desc;
 }
 
 function field(label, inner) { return `<label class="field"><span>${esc(label)}</span>${inner}</label>`; }
@@ -104,7 +121,7 @@ export function openTxnSheet(ctx, id, { deletedVersion = null } = {}) {
     <div class="card">
       <div class="row" style="padding:0;min-height:0;cursor:default"><div class="tile">${icon(txnKindIcon(t))}</div>
         <div class="main"><div class="title">${esc(t.desc)}</div><div class="meta">${esc(longDate(t.date))} · ${esc(txnLine(s, t))}</div></div>
-        <div class="amount ${txnAmountClass(s, t)}">${txnAmountText(t)}</div></div>
+        ${txnAmount(s, t)}</div>
       ${t.note ? `<p class="muted small">${esc(t.note)}</p>` : ''}
       ${t.occ ? '<p class="muted small">Paid against a planned payment.</p>' : ''}
       ${live ? '' : '<p class="tag bad">Deleted</p>'}
@@ -230,6 +247,10 @@ export function openRuleSheet(ctx, ruleId = null) {
     <div class="grid2" data-day>${field('Day of month', `<input name="day" inputmode="numeric" value="${esc(sched.day || '')}">`)}<div data-month>${field('Month', `<select name="month">${Array.from({ length: 12 }, (_, i) => `<option value="${i + 1}" ${sched.month === i + 1 ? 'selected' : ''}>${new Date(Date.UTC(2026, i, 1)).toLocaleDateString('en-GB', { month: 'long', timeZone: 'UTC' })}</option>`).join('')}</select>`)}</div></div>
     <div data-date>${field('Date', `<input type="date" name="date" value="${esc(sched.date || today)}">`)}</div>
     <label class="check"><input type="checkbox" name="variable" ${r?.variable ? 'checked' : ''}><span>The amount changes each time (I’ll check the statement)</span></label>
+    <div data-cat>${field('What it is', `<select name="category">${['must', 'allowance', 'saving'].map(c => `<option value="${c}" ${(r ? categoryOf(s, r) : 'must') === c ? 'selected' : ''}>${esc(CATEGORIES[c].label)}</option>`).join('')}</select>`)}</div>
+    <div class="toggle" data-target><span>Stop when the pot reaches its target<br><small class="muted">Only moves what the pot still needs</small></span><button type="button" data-until aria-pressed="${!!r?.untilTarget}">${r?.untilTarget ? 'On' : 'Off'}</button></div>
+    <div data-months><label class="field"><span>Months it doesn’t happen</span></label><div class="monthpick">${['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'].map((m, i) => `<button type="button" data-m="${i + 1}" aria-pressed="${(r?.skipMonths || []).includes(i + 1)}" aria-label="${new Date(Date.UTC(2026, i, 1)).toLocaleDateString('en-GB', { month: 'long', timeZone: 'UTC' })}">${m}</button>`).join('')}</div>
+      <p class="muted small">For example, accommodation that stops over summer.</p></div>
     ${r ? `${field('Change applies from', `<input type="date" name="from_date" value="${esc(today)}">`)}<p class="muted small">Earlier payments keep their old details.</p>` : field('Starts', `<input type="date" name="start" value="${esc(today)}">`)}
     ${errorBox()}
     <div class="btnrow"><button class="btn primary" type="submit">${r ? 'Save change' : 'Add regular payment'}</button>${r ? '<button class="btn danger" type="button" data-stop>Stop it</button>' : ''}</div>
@@ -243,7 +264,13 @@ export function openRuleSheet(ctx, ruleId = null) {
       el.querySelector('[data-day]').hidden = !['monthly', 'annual'].includes(f.stype.value);
       el.querySelector('[data-month]').hidden = f.stype.value !== 'annual';
       el.querySelector('[data-date]').hidden = f.stype.value !== 'once';
+      el.querySelector('[data-cat]').hidden = f.kind.value === 'income';
+      el.querySelector('[data-target]').hidden = f.kind.value !== 'transfer';
+      el.querySelector('[data-months]').hidden = !['monthly', 'payday'].includes(f.stype.value);
     };
+    const until = el.querySelector('[data-until]');
+    until.onclick = () => { const on = until.getAttribute('aria-pressed') !== 'true'; until.setAttribute('aria-pressed', String(on)); until.textContent = on ? 'On' : 'Off'; };
+    el.querySelectorAll('[data-m]').forEach(b => b.onclick = () => b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true')));
     f.kind.onchange = sync; f.stype.onchange = sync; sync();
     f.onsubmit = async e => {
       e.preventDefault();
@@ -255,7 +282,12 @@ export function openRuleSheet(ctx, ruleId = null) {
         if (['monthly', 'annual'].includes(type) && !(day >= 1 && day <= 31)) throw new Error('Enter a day between 1 and 31.');
         const newSched = type === 'monthly' ? { type, day } : type === 'annual' ? { type, day, month: Number(f.month.value) } : type === 'once' ? { type, date: f.date.value } : { type };
         const fields = { name: f.name.value.trim(), kind: f.kind.value, amount, from: f.kind.value === 'income' ? null : f.from.value || null,
-          to: f.kind.value === 'bill' ? null : f.to.value || null, sched: newSched, variable: f.variable.checked };
+          to: f.kind.value === 'bill' ? null : f.to.value || null, sched: newSched, variable: f.variable.checked,
+          category: f.kind.value === 'income' ? null : f.category.value, untilTarget: f.kind.value === 'transfer' && until.getAttribute('aria-pressed') === 'true',
+          skipMonths: [...el.querySelectorAll('[data-m][aria-pressed="true"]')].map(b => Number(b.dataset.m)) };
+        if (!r?.category && fields.category === categoryOf(s, { ...fields, category: null })) fields.category = r?.category ?? null;
+        if (!r?.untilTarget && !fields.untilTarget) fields.untilTarget = r?.untilTarget;
+        if (!(r?.skipMonths?.length) && !fields.skipMonths.length) fields.skipMonths = r?.skipMonths;
         if (fields.kind === 'transfer' && !fields.to) throw new Error('Choose where the money goes.');
         if (!r) {
           const start = type === 'once' ? f.date.value : f.start.value;
@@ -285,26 +317,120 @@ export function openRuleSheet(ctx, ruleId = null) {
 }
 
 // ---- Check an account against the bank -------------------------------------------
-export function openCheckSheet(ctx, accountId) {
+// One screen: type what the bank shows. If it differs, Payday lists what it hasn't
+// been told about yet (overdue or due items, possible duplicates) so you can fix the
+// cause. A correction is the last resort and always needs a reason.
+export function openCheckSheet(ctx, accountId, { bank = null } = {}) {
   const s = ctx.state, a = s.account[accountId], today = ctx.today();
-  const app = displayBalance(a, balances(s, today)[accountId]);
   const isCard = a.type === 'card';
-  sheet(`Check ${a.name}`, `<form novalidate>
-    <p class="muted">Payday shows <strong>${money(app)}</strong>${isCard ? ' owed' : ''}. What does ${isCard ? 'your statement or app say you owe' : 'your bank app show'} right now?</p>
-    ${field(isCard ? 'Amount owed (£)' : 'Balance (£)', `<input class="big" name="bank" inputmode="decimal" value="${esc(penceToInput(app))}">`)}
-    ${errorBox()}<div class="btnrow"><button class="btn primary block" type="submit">Check</button></div></form>`, el => {
+  const appValue = balances(s, today)[accountId];
+  const appShown = displayBalance(a, appValue);
+  if (bank === null) {
+    sheet(`Check ${a.name}`, `<form novalidate>
+      <p class="muted">What does ${isCard ? 'your card statement or app say you owe' : 'your bank app show'} for ${esc(a.name)} right now?</p>
+      ${field(isCard ? 'Amount owed (£)' : 'Balance in the bank (£)', `<input class="big" name="bank" inputmode="decimal" autocomplete="off" placeholder="0.00">`)}
+      ${errorBox()}<div class="btnrow"><button class="btn primary block" type="submit">Compare</button></div></form>`, el => {
+      const f = el.querySelector('form');
+      setTimeout(() => f.bank.focus(), 80);
+      f.onsubmit = async e => {
+        e.preventDefault();
+        const shown = parsePounds(f.bank.value);
+        if (shown === null) { showError(el, new Error('Enter the figure your bank shows, for example 310.00 or -25.00.')); return; }
+        const value = isCard ? -shown : shown;
+        if (value === appValue) {
+          const { event } = checkBalance(ctx.state, accountId, value, today);
+          await ctx.dispatch(event, { message: `${a.name} matches your bank: ${money(shown)}` });
+          return;
+        }
+        openCheckSheet(ctx, accountId, { bank: value });
+      };
+    });
+    return;
+  }
+  const diff = bank - appValue; // + means the bank has more than Payday
+  const shownDiff = isCard ? -diff : diff;
+  const occ = allOccurrences(s, s.setting.startDate?.value || today, addDays(today, 3), today)
+    .filter(o => (o.status === 'overdue' || o.status === 'planned' || o.status === 'part') && (o.from === accountId || o.to === accountId));
+  // Money the bank has already taken that Payday doesn't know about, or money that arrived.
+  const wanted = o => (diff < 0 ? o.from === accountId : o.to === accountId);
+  const cands = occ.filter(wanted).map(o => ({ ...o, amt: o.remaining || o.amount }))
+    .sort((x, y) => (x.amt === Math.abs(diff) ? -1 : 0) - (y.amt === Math.abs(diff) ? -1 : 0) || x.date.localeCompare(y.date));
+  const recent = Object.values(s.txn).filter(t => (t.from === accountId || t.to === accountId) && t.date >= addDays(today, -60));
+  const dups = recent.filter(t => recent.some(u => u.id !== t.id && u.amount === t.amount && (u.desc || '').toLowerCase() === (t.desc || '').toLowerCase() && Math.abs(Date.parse(u.date) - Date.parse(t.date)) <= 3 * 86400000 && (u.created || '') < (t.created || '')));
+  const ableDups = diff < 0 ? dups.filter(t => t.to === accountId) : dups.filter(t => t.from === accountId);
+  const body = `<div class="diffbox"><span class="muted small">Your bank shows</span><strong class="amount">${money(isCard ? -bank : bank)}</strong>
+      <span class="small">Payday shows ${money(appShown)}. The bank has <strong>${money(Math.abs(shownDiff))} ${shownDiff > 0 ? 'more' : 'less'}</strong>${isCard ? ' owing' : ''}.</span></div>
+    ${cands.length ? `<section><h2>Is it one of these?</h2><p class="muted small">${diff < 0 ? 'Payments Payday thinks haven’t gone out yet.' : 'Money Payday thinks hasn’t arrived yet.'} Mark the ones your bank shows.</p>
+      <div class="list">${cands.map(o => `<div class="row static"><div class="main"><div class="title">${esc(o.name)}</div>
+        <div class="meta">${o.amt === Math.abs(diff) ? chip('paid', 'Exact match') + ' ' : ''}${chip(o.status)} ${esc(shortDate(o.date))}</div></div>
+        <div class="amount">${money(o.amt)}</div><button class="donebtn" data-cand="${esc(o.key)}">${o.to === accountId && o.kind === 'income' ? 'Arrived' : 'Gone'}</button></div>`).join('')}</div></section>` : ''}
+    ${ableDups.length ? `<section><h2>Recorded twice?</h2><p class="muted small">Same amount and description within three days.</p><div class="list">${ableDups.map(t => `<div class="row static"><div class="main"><div class="title">${esc(t.desc)}</div>
+      <div class="meta">${esc(shortDate(t.date))}</div></div><div class="amount">${money(t.amount)}</div><button class="donebtn ghost" data-dup="${esc(t.id)}">Delete</button></div>`).join('')}</div></section>` : ''}
+    <section><h2>${cands.length || ableDups.length ? 'None of these?' : 'What was it?'}</h2>
+      <form novalidate>${field('Reason for the difference', `<input name="reason" maxlength="100" placeholder="e.g. Cash withdrawal, card refund">`)}${errorBox()}
+      <div class="btnrow"><button class="btn primary" type="submit">Record ${money(Math.abs(shownDiff))} correction</button><button class="btn" type="button" data-later>Not now</button></div></form>
+      <p class="muted small">A correction makes Payday match your bank from today. It is kept in History and can be undone.</p></section>`;
+  sheet(`Check ${a.name}`, body, el => {
+    el.querySelectorAll('[data-cand]').forEach(b => b.onclick = async () => {
+      const o = cands.find(x => x.key === b.dataset.cand);
+      try {
+        await ctx.dispatch(markPaid(ctx.state, o.key, { date: o.date <= today ? o.date : today, amount: o.amt }, today), { message: `${o.name}: marked as ${o.kind === 'income' ? 'arrived' : 'gone'}` });
+        reopen(ctx, accountId, bank);
+      } catch (err) { toast(err.message, { warn: true }); }
+    });
+    el.querySelectorAll('[data-dup]').forEach(b => b.onclick = async () => {
+      try { await ctx.dispatch(deleteTxn(ctx.state, b.dataset.dup), { message: 'Duplicate deleted' }); reopen(ctx, accountId, bank); } catch (err) { toast(err.message, { warn: true }); }
+    });
+    el.querySelector('[data-later]').onclick = async () => {
+      const { event } = checkBalance(ctx.state, accountId, bank, today);
+      await ctx.dispatch(event, { message: `Check saved; ${money(Math.abs(shownDiff))} still to explain` });
+    };
     el.querySelector('form').onsubmit = async e => {
       e.preventDefault();
+      const reason = e.target.reason.value.trim();
+      if (!reason) { showError(el, new Error('Say what the difference was, even roughly. It helps you spot patterns later.')); return; }
+      const { event } = checkBalance(ctx.state, accountId, bank, today, { correct: true, reason });
+      await ctx.dispatch(event, { message: `${a.name} now matches your bank` });
+    };
+  });
+}
+async function reopen(ctx, accountId, bank) {
+  const a = ctx.state.account[accountId];
+  if (balances(ctx.state, ctx.today())[accountId] === bank) {
+    const { event } = checkBalance(ctx.state, accountId, bank, ctx.today());
+    await ctx.dispatch(event, { message: `${a.name} now matches your bank` });
+  } else openCheckSheet(ctx, accountId, { bank });
+}
+
+// ---- What an account is for -----------------------------------------------------------
+export function openAccountSettings(ctx, accountId) {
+  const s = ctx.state, a = s.account[accountId];
+  const role = roleOf(s, a);
+  const roles = Object.entries(ROLES).filter(([k]) => k !== 'main' || role === 'main');
+  sheet(`${a.name}: settings`, `<form novalidate>
+    ${field('Name', `<input name="name" maxlength="60" value="${esc(a.name)}">`)}
+    ${field('What it is for', `<select name="role">${roles.map(([k, v]) => `<option value="${k}" ${k === role ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select>`)}
+    <p class="muted small" data-help>${esc(ROLES[role]?.help || '')}</p>
+    <div data-bills>${field('Keep this much spare in it (£)', `<input name="buffer" inputmode="decimal" value="${esc(penceToInput(a.buffer || 0))}">`)}
+      <p class="muted small">Payday adds this on top of what the direct debits need when it works out the payday top-up. Protects you from a payment that is a little higher than expected.</p></div>
+    <div data-pot>${field('Target (£, optional)', `<input name="target" inputmode="decimal" value="${a.target != null ? esc(penceToInput(a.target)) : ''}" placeholder="None">`)}
+      ${field('Never plan below (£)', `<input name="floor" inputmode="decimal" value="${esc(penceToInput(a.floor || 0))}">`)}
+      <p class="muted small">"Can I afford it?" says no to anything that would take this account below this figure, e.g. a £1,000 emergency fund.</p></div>
+    ${errorBox()}<div class="btnrow"><button class="btn primary block" type="submit">Save</button></div></form>`, el => {
+    const f = el.querySelector('form');
+    const sync = () => {
+      el.querySelector('[data-help]').textContent = ROLES[f.role.value]?.help || '';
+      el.querySelector('[data-bills]').hidden = f.role.value !== 'bills';
+      el.querySelector('[data-pot]').hidden = !['savings', 'holding', 'allowance', 'other'].includes(f.role.value);
+    };
+    f.role.onchange = sync; sync();
+    f.onsubmit = async e => {
+      e.preventDefault();
       try {
-        const shown = parsePounds(e.target.bank.value);
-        if (shown === null) throw new Error('Enter the balance, for example 310.00 or -25.00.');
-        const value = isCard ? -shown : shown;
-        const { event, diff } = checkBalance(ctx.state, accountId, value, today);
-        if (diff === 0) { await ctx.dispatch(event, { message: `${a.name} matches your bank` }); return; }
-        const d = isCard ? -diff : diff;
-        const ok = await confirmSheet('It doesn’t match', `Your bank shows ${money(Math.abs(d))} ${d > 0 ? 'more' : 'less'} than Payday. First look for a payment you haven’t recorded. If you can’t find one, record the difference as a bank correction.`, 'Record a correction');
-        const { event: ev2 } = checkBalance(ctx.state, accountId, value, today, { correct: ok });
-        await ctx.dispatch(ev2, { message: ok ? `${a.name} corrected to match your bank` : `Check recorded; ${money(Math.abs(d))} still to explain` });
+        const num = (v, allowEmpty) => { if (allowEmpty && !v.trim()) return null; const x = parsePounds(v || '0'); if (x === null || x < 0) throw new Error('Enter amounts like 1000.00'); return x; };
+        const next = { ...a, name: f.name.value.trim(), buffer: num(f.buffer.value), target: num(f.target.value, true), floor: num(f.floor.value) };
+        if (f.role.value !== role || a.role) next.role = f.role.value;
+        await ctx.dispatch(saveAccount(ctx.state, next), { message: `${next.name} saved` });
       } catch (err) { showError(el, err); }
     };
   });

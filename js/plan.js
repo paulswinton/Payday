@@ -33,12 +33,15 @@ export function occurrences(rule, from, to, state) {
   const push = (nominal, expected, period) => {
     const v = versionAt(rule, nominal);
     if (v.paused) return;
+    // Months a regular payment doesn't happen (e.g. no accommodation over summer).
+    if ((v.skipMonths || []).includes(Number(nominal.slice(5, 7))) && v.sched.type !== 'once') return;
     const key = `${rule.id}|${nominal}`;
     const o = state.occ[key] || {};
     out.push({
       key, ruleId: rule.id, nominal, date: o.date || expected, amount: o.amount ?? v.amount,
       name: v.name, kind: v.kind, from: v.from, to: v.to, skipped: !!o.skip, edited: o.amount != null || !!o.date,
       variable: !!v.variable, undated: v.sched.type === 'undated', period: period?.key || null,
+      goal: rule.goal || null, untilTarget: !!v.untilTarget, category: v.category || null,
     });
   };
   const type = rule.sched.type;
@@ -72,16 +75,26 @@ export function settledIndex(state) {
   for (const t of Object.values(state.txn)) if (t.occ) idx[t.occ] = t;
   return idx;
 }
+// Every payment recorded against each planned occurrence (goal instalments can be paid in parts).
+export function paymentsIndex(state) {
+  const idx = {};
+  for (const t of Object.values(state.txn)) if (t.occ) (idx[t.occ] ??= []).push(t);
+  return idx;
+}
 
 // All occurrences of all rules in a date window, with their status today.
 export function allOccurrences(state, from, to, today) {
-  const settled = settledIndex(state);
+  const pays = paymentsIndex(state);
   const out = [];
   for (const r of Object.values(state.rule)) {
     for (const o of occurrences(r, from, to, state)) {
-      const txn = settled[o.key];
-      const status = txn ? 'paid' : o.skipped ? 'skipped' : o.date < today ? 'overdue' : 'planned';
-      out.push({ ...o, status, txn: txn || null });
+      const list = pays[o.key] || [];
+      const txn = list[0] || null;
+      const paidAmount = list.reduce((t, x) => t + x.amount, 0);
+      // A goal instalment paid in part stays open for the rest; anything else counts as paid once recorded.
+      const part = !!o.goal && list.length > 0 && paidAmount < o.amount;
+      const status = part ? (o.date < today ? 'overdue' : 'part') : txn ? 'paid' : o.skipped ? 'skipped' : o.date < today ? 'overdue' : 'planned';
+      out.push({ ...o, status, txn, paidAmount, remaining: part ? o.amount - paidAmount : (txn ? 0 : o.amount), part });
     }
   }
   return out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.name.localeCompare(b.name)));
