@@ -2,7 +2,7 @@
 import { esc, money, icon, sheet, confirmSheet, toast, relTime } from '../ui.js';
 import { parsePounds, penceToInput } from '../money.js';
 import { longDate, shortDate, periodName } from '../calendar.js';
-import { replay, selfCheck, balances, emptyState, applyEvent } from '../model.js';
+import { replay, selfCheck, balances, emptyState, applyEvent, makeEvent } from '../model.js';
 import { setSetting, changeRuleFrom } from '../commands.js';
 import { planPeriods } from '../plan.js';
 import { deriveKey, newSalt, readEnvelope, encryptJSON } from '../crypto.js';
@@ -10,7 +10,7 @@ import { checkRepo, versions, download, openBackup } from '../backup.js';
 import { validateExport, startChoices, openingBalances, buildImport, verifyImport, START_DATE } from '../importer.js';
 import { field, errorBox, showError, accountsList } from './forms.js';
 
-const VERSION = '1.3.0';
+const VERSION = '1.3.1';
 
 // ---- First run ----------------------------------------------------------------
 export function renderWelcome(ctx) {
@@ -167,6 +167,7 @@ export function renderSettings(ctx) {
       if (date) o[key] = date; else delete o[key];
       await ctx.dispatch(setSetting(ctx.state, 'paydayOverrides', o, date ? `Payday for ${key} moved to ${date}` : `Payday for ${key} back to normal`));
     });
+    el.querySelector('[data-replay]')?.addEventListener('click', () => replaySheet(ctx));
     el.querySelector('[data-testday]')?.addEventListener('submit', e => { e.preventDefault(); try { if (e.target.day.value) localStorage.setItem('payday-test-today', e.target.day.value); else localStorage.removeItem('payday-test-today'); } catch { /* ignore */ } toast(e.target.day.value ? `Pretending today is ${e.target.day.value}` : 'Back to the real date'); ctx.renderSameRoute(); });
     el.querySelector('[data-theme]')?.addEventListener('change', e => { try { localStorage.setItem('payday-theme', e.target.value); } catch { /* ignore */ } applyTheme(); });
     el.querySelector('[data-erase]')?.addEventListener('click', () => eraseSheet(ctx));
@@ -177,7 +178,9 @@ export function renderSettings(ctx) {
   return `<a class="back" href="#/today">${icon('back')} Today</a>
   <header class="topbar"><h1>Settings</h1></header>
   ${window.PAYDAY_TEST ? `<section class="card" style="border-color:var(--orange)"><h2>Test copy: pretend today is</h2><p class="muted small">Jump to a payday (e.g. 26 November) to try the Done buttons. Empty = the real date.</p>
-    <form data-testday class="grid2" novalidate>${field('Date', `<input type="date" name="day" value="${esc(today === todayReal() ? '' : today)}">`)}<button class="btn primary" type="submit" style="align-self:end">Use it</button></form></section>` : ''}
+    <form data-testday class="grid2" novalidate>${field('Date', `<input type="date" name="day" value="${esc(today === todayReal() ? '' : today)}">`)}<button class="btn primary" type="submit" style="align-self:end">Use it</button></form>
+    <h3 style="margin-top:18px">Replay a payday</h3><p class="muted small">Go back to the morning of a payday with nothing moved, then walk through it on the Payday screen.</p>
+    <button class="btn block" data-replay>Replay a payday from the start</button></section>` : ''}
   <section class="card"><h2>Automatic backup</h2><p>${statusLine}</p>
     <p class="muted small">Every change is saved on this phone straight away, then an encrypted copy goes to your private GitHub repository a few seconds later. GitHub keeps every earlier version.</p>
     <div class="btnrow">${!cfg ? '<button class="btn primary" data-setup>Set up backup</button>' : b.status === 'conflict' ? '<button class="btn primary" data-keep-phone>Keep this phone’s copy</button><button class="btn" data-use-backup>Use a backup copy</button>' : b.status === 'locked' ? '<button class="btn primary" data-unlock>Enter passphrase</button>' : '<button class="btn" data-now>Back up now</button><button class="btn" data-versions>Restore an earlier version</button>'}</div>
@@ -202,6 +205,44 @@ export function renderSettings(ctx) {
     <p>${problems.length ? `<span class="tag bad">${problems.length} problem${problems.length === 1 ? '' : 's'}</span> ${esc(problems.slice(0, 5).join('. '))}` : `<span class="tag ok">All consistent</span> ${s.events.length} saved changes rebuild exactly the same balances.`}</p>
     <p class="muted small">Storage on this phone: ${ctx.persistence.persisted ? 'kept (iOS will not clear it to save space)' : 'not guaranteed: open Payday from the Home Screen icon'}. ${ctx.standalone ? 'Running from the Home Screen.' : 'Running in a browser tab.'} Version ${VERSION}.</p></section>
   <section class="card"><h2>Start again on this phone</h2><p class="muted small">Erases this phone’s copy only. Your GitHub backups are untouched.</p><button class="btn danger" data-erase>Erase this phone’s copy</button></section>`;
+}
+
+// Test copy only: clear every recorded movement and start again on the morning of a
+// payday, with the balances you give. Regular payments and accounts are kept.
+function replaySheet(ctx) {
+  const s = ctx.state;
+  const periods = planPeriods(s);
+  const list = accountsList(s, { types: ['bank', 'pot', 'card'] }).filter(a => a.tracked !== false);
+  const main = s.setting.mainAccount?.value || 'acc-current';
+  sheet('Replay a payday', `<form novalidate>
+    ${field('Payday', `<select name="period">${periods.slice(0, 6).map(p => `<option value="${p.key}">${esc(longDate(p.start))}</option>`).join('')}</select>`)}
+    <p class="muted small">Balances on the morning of that payday, <strong>before</strong> the salary arrived and before anything moved. ${list.length} accounts.</p>
+    ${list.map(a => field(`${a.name}${a.type === 'card' ? ' (owed)' : ''}${a.id === main ? ' – before salary' : ''}`, `<input name="b-${esc(a.id)}" inputmode="decimal" value="${esc(penceToInput(a.type === 'card' ? -(a.opening || 0) : (a.opening || 0)))}">`)).join('')}
+    ${errorBox()}<div class="btnrow"><button class="btn danger block" type="submit">Clear everything recorded and replay</button></div>
+    <p class="muted small">Every transaction, correction and confirmation in this test copy is removed. You can undo it straight after. Your real Payday is not affected.</p></form>`, el => {
+    const f = el.querySelector('form');
+    f.onsubmit = async e => {
+      e.preventDefault();
+      try {
+        const p = periods.find(x => x.key === f.period.value);
+        const changes = [];
+        for (const a of list) {
+          const v = parsePounds(f[`b-${a.id}`].value || '0');
+          if (v === null) throw new Error(`Enter a balance for ${a.name}, e.g. 246.00`);
+          const next = { ...a, opening: a.type === 'card' ? -v : v };
+          delete next.openingDate;
+          changes.push({ kind: 'account', key: a.id, value: next });
+        }
+        for (const id of Object.keys(s.txn)) changes.push({ op: 'remove', kind: 'txn', key: id });
+        for (const id of Object.keys(s.check)) changes.push({ op: 'remove', kind: 'check', key: id });
+        for (const [k, o] of Object.entries(s.occ)) if (o.skip || o.date) changes.push({ op: 'remove', kind: 'occ', key: k });
+        changes.push({ kind: 'setting', key: 'startDate', value: { value: p.start } });
+        await ctx.dispatch(makeEvent(ctx.state, `Replay from payday ${p.start}: nothing moved`, changes), { message: `Back to the morning of ${shortDate(p.start)}. Nothing has moved.` });
+        try { localStorage.setItem('payday-test-today', p.start); } catch { /* ignore */ }
+        ctx.go(`#/payday/${p.key}`);
+      } catch (err) { showError(el, err); }
+    };
+  });
 }
 
 function todayReal() { const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`; }
